@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.idea/
+*.swp
+*.DS_Store
+Thumbs.db
+*.log
+TestResults/
+[Pp]ublish/
+artifacts/
