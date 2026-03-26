@@ -1,6 +1,8 @@
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Activations;
+using SupervisedLearning.Core.Layers;
 using SupervisedLearning.Data;
+using SupervisedLearning.Training.Optimizers;
 
 Console.WriteLine("=== Activations ===");
 
@@ -63,3 +65,49 @@ Console.WriteLine($"CreateBatches(32): {batches.Length} batches, sizes = [{strin
 
 var splits = dataset.TrainTestSplit(trainRatio: 0.8);
 Console.WriteLine($"TrainTestSplit(0.8): train={splits[0].Samples.Length}, test={splits[1].Samples.Length}");
+
+Console.WriteLine();
+Console.WriteLine("=== Network Forward/Backward ===");
+
+var network = new Network();
+network.AddLayer(new DenseLayer(inputSize: 2, outputSize: 4, activation: new ReLU(), seed: 1));
+network.AddLayer(new DenseLayer(inputSize: 4, outputSize: 2, activation: new Sigmoid(), seed: 2));
+
+double[] input = { 1.0, -0.5 };
+double[] target = { 1.0, 0.0 };
+
+double[] predicted = network.Forward(input);
+Console.WriteLine($"Forward output:  [{string.Join(", ", predicted.Select(v => v.ToString("F6")))}]");
+
+double mseLoss = predicted.Zip(target, (p, t) => (p - t) * (p - t)).Sum() / 2.0;
+Console.WriteLine($"MSE loss:        {mseLoss:F6}");
+
+double[] lossGrad = predicted.Zip(target, (p, t) => p - t).ToArray();
+Console.WriteLine($"Loss gradient:   [{string.Join(", ", lossGrad.Select(v => v.ToString("F6")))}]");
+
+network.Backward(lossGrad);
+
+var sgd = new SGDOptimizer();
+double learningRate = 0.1;
+
+foreach (var layer in network.Layers)
+{
+    sgd.UpdateWeights(layer, layer.GetGradients(), learningRate);
+    layer.GetGradients().Reset();
+}
+
+double[] predictedAfter = network.Forward(input);
+double mseLossAfter = predictedAfter.Zip(target, (p, t) => (p - t) * (p - t)).Sum() / 2.0;
+Console.WriteLine($"Loss after SGD:  {mseLossAfter:F6}  (should be less than {mseLoss:F6})");
+
+Console.WriteLine();
+Console.WriteLine("=== Network Clone ===");
+
+var cloned = network.Clone();
+double[] outputOriginal = network.Forward(input);
+double[] outputCloned = cloned.Forward(input);
+Console.WriteLine($"Original output: [{string.Join(", ", outputOriginal.Select(v => v.ToString("F6")))}]");
+Console.WriteLine($"Cloned output:   [{string.Join(", ", outputCloned.Select(v => v.ToString("F6")))}]");
+
+double maxDiff = outputOriginal.Zip(outputCloned, (a, b) => Math.Abs(a - b)).Max();
+Console.WriteLine($"Max diff:        {maxDiff:E2}  (should be ~0)");
