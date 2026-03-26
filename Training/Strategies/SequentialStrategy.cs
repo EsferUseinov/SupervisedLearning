@@ -1,13 +1,75 @@
 namespace SupervisedLearning.Training.Strategies;
 
+using System.Diagnostics;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Interfaces;
 using SupervisedLearning.Data;
 
 public class SequentialStrategy : ITrainingStrategy
 {
+    private readonly ILossFunction _lossFunction;
+    private readonly IOptimizer _optimizer;
+
     public string Name => "Sequential";
 
-    public EpochResult RunEpoch(Network network, DataSample[] batch, double learningRate) =>
-        throw new NotImplementedException();
+    public SequentialStrategy(ILossFunction lossFunction, IOptimizer optimizer)
+    {
+        _lossFunction = lossFunction;
+        _optimizer = optimizer;
+    }
+
+    public EpochResult RunEpoch(Network network, DataSample[] batch, double learningRate)
+    {
+        var epochTimer = Stopwatch.StartNew();
+        var forwardTimer = new Stopwatch();
+        var backwardTimer = new Stopwatch();
+
+        int layerCount = network.Layers.Count;
+        var localGradients = new GradientPacket[layerCount];
+        for (int i = 0; i < layerCount; i++)
+        {
+            localGradients[i] = new GradientPacket(network.Layers[i].InputSize, network.Layers[i].OutputSize);
+            localGradients[i].Reset();
+        }
+
+        double totalLoss = 0.0;
+
+        foreach (var sample in batch)
+        {
+            forwardTimer.Start();
+            double[] predicted = network.Forward(sample.Input);
+            forwardTimer.Stop();
+
+            totalLoss += _lossFunction.Compute(predicted, sample.Label);
+            double[] lossGrad = _lossFunction.Gradient(predicted, sample.Label);
+
+            backwardTimer.Start();
+            network.Backward(lossGrad);
+            backwardTimer.Stop();
+
+            for (int i = 0; i < layerCount; i++)
+            {
+                localGradients[i].Accumulate(network.Layers[i].GetGradients());
+                network.Layers[i].GetGradients().Reset();
+            }
+        }
+
+        for (int i = 0; i < layerCount; i++)
+        {
+            localGradients[i].Scale(1.0 / batch.Length);
+            _optimizer.UpdateWeights(network.Layers[i], localGradients[i], learningRate);
+        }
+
+        epochTimer.Stop();
+
+        return new EpochResult
+        {
+            Loss = totalLoss / batch.Length,
+            ForwardTimeMs = forwardTimer.ElapsedMilliseconds,
+            BackwardTimeMs = backwardTimer.ElapsedMilliseconds,
+            SyncTimeMs = 0,
+            EpochDurationMs = epochTimer.ElapsedMilliseconds,
+            SamplesProcessed = batch.Length
+        };
+    }
 }
