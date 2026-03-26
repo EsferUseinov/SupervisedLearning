@@ -1,8 +1,11 @@
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Activations;
 using SupervisedLearning.Core.Layers;
+using SupervisedLearning.Core.Loss;
 using SupervisedLearning.Data;
+using SupervisedLearning.Training;
 using SupervisedLearning.Training.Optimizers;
+using SupervisedLearning.Training.Strategies;
 
 Console.WriteLine("=== Activations ===");
 
@@ -111,3 +114,41 @@ Console.WriteLine($"Cloned output:   [{string.Join(", ", outputCloned.Select(v =
 
 double maxDiff = outputOriginal.Zip(outputCloned, (a, b) => Math.Abs(a - b)).Max();
 Console.WriteLine($"Max diff:        {maxDiff:E2}  (should be ~0)");
+
+Console.WriteLine();
+Console.WriteLine("=== Training (Sequential, 30 epochs) ===");
+
+var trainDataset = DataLoader.GenerateSynthetic(samples: 200, inputSize: 4, outputSize: 2, seed: 7);
+
+var trainNetwork = new Network();
+trainNetwork.AddLayer(new DenseLayer(inputSize: 4, outputSize: 8, activation: new ReLU(), seed: 10));
+trainNetwork.AddLayer(new DenseLayer(inputSize: 8, outputSize: 4, activation: new ReLU(), seed: 11));
+trainNetwork.AddLayer(new DenseLayer(inputSize: 4, outputSize: 2, activation: new Sigmoid(), seed: 12));
+
+var mse = new MSELoss();
+var sgdOptimizer = new SGDOptimizer();
+var strategy = new SequentialStrategy(mse, sgdOptimizer);
+var config = new TrainingConfig
+{
+    Epochs = 30,
+    BatchSize = 32,
+    LearningRate = 0.05,
+    Seed = 42
+};
+
+var trainer = new Trainer(strategy, config);
+var result = trainer.Train(trainNetwork, trainDataset);
+
+Console.WriteLine($"Strategy:        {result.StrategyName}");
+Console.WriteLine($"Total time:      {result.TotalDurationMs} ms");
+Console.WriteLine($"Final loss:      {result.FinalLoss:F6}");
+Console.WriteLine();
+Console.WriteLine("Loss curve (every 5 epochs):");
+for (int i = 0; i < result.EpochResults.Length; i++)
+{
+    if ((i + 1) % 5 == 0 || i == 0)
+        Console.WriteLine($"  Epoch {i + 1,2}: loss={result.EpochResults[i].Loss:F6}");
+}
+
+bool lossDecreased = result.LossCurve[^1] < result.LossCurve[0];
+Console.WriteLine($"\nLoss decreased:  {lossDecreased}  ({result.LossCurve[0]:F6} -> {result.LossCurve[^1]:F6})");
