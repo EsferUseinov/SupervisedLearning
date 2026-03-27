@@ -6,6 +6,7 @@ using SupervisedLearning.Data;
 using SupervisedLearning.Training;
 using SupervisedLearning.Training.Optimizers;
 using SupervisedLearning.Training.Strategies;
+using SupervisedLearning.Verification;
 
 Console.WriteLine("=== Activations ===");
 
@@ -152,3 +153,23 @@ for (int i = 0; i < result.EpochResults.Length; i++)
 
 bool lossDecreased = result.LossCurve[^1] < result.LossCurve[0];
 Console.WriteLine($"\nLoss decreased:  {lossDecreased}  ({result.LossCurve[0]:F6} -> {result.LossCurve[^1]:F6})");
+
+Console.WriteLine();
+Console.WriteLine("=== Gradient Check ===");
+
+var checkNet = new Network();
+checkNet.AddLayer(new DenseLayer(inputSize: 3, outputSize: 4, activation: new ReLU(), seed: 20));
+checkNet.AddLayer(new DenseLayer(inputSize: 4, outputSize: 2, activation: new Sigmoid(), seed: 21));
+
+var checkSample = new DataSample(
+    input: new double[] { 0.5, -0.3, 0.8 },
+    label: new double[] { 1.0, 0.0 }
+);
+
+var checker = new GradientChecker(epsilon: 1e-5, tolerance: 1e-4);
+double maxRelErr = checker.ComputeMaxRelativeError(checkNet, new MSELoss(), checkSample);
+bool passed = checker.Check(checkNet, new MSELoss(), checkSample);
+
+Console.WriteLine($"Network:         3 -> 4 -> 2  (ReLU + Sigmoid)");
+Console.WriteLine($"Max relative error: {maxRelErr:E4}  (tolerance=1e-4)");
+Console.WriteLine($"Gradient check:  {(passed ? "PASSED" : "FAILED")}");
