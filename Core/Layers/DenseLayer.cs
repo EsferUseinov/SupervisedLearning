@@ -75,6 +75,11 @@ public class DenseLayer : ILayer
         return dx;
     }
 
+    public double GetWeight(int i, int j) => _weights[i, j];
+    public void SetWeight(int i, int j, double value) => _weights[i, j] = value;
+    public double GetBias(int i) => _bias[i];
+    public void SetBias(int i, double value) => _bias[i] = value;
+
     public GradientPacket GetGradients() => _gradients;
 
     public void ApplyGradients(GradientPacket gradients, double learningRate)
