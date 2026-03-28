@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Activations;
+using SupervisedLearning.Core.Interfaces;
 using SupervisedLearning.Core.Layers;
 using SupervisedLearning.Core.Loss;
 using SupervisedLearning.Data;
@@ -173,3 +175,51 @@ bool passed = checker.Check(checkNet, new MSELoss(), checkSample);
 Console.WriteLine($"Network:         3 -> 4 -> 2  (ReLU + Sigmoid)");
 Console.WriteLine($"Max relative error: {maxRelErr:E4}  (tolerance=1e-4)");
 Console.WriteLine($"Gradient check:  {(passed ? "PASSED" : "FAILED")}");
+
+Console.WriteLine();
+Console.WriteLine("=== DataParallel vs Sequential ===");
+
+var benchDataset = DataLoader.GenerateSynthetic(samples: 800, inputSize: 8, outputSize: 2, seed: 99);
+
+var benchConfig = new TrainingConfig { Epochs = 10, BatchSize = 64, LearningRate = 0.05, Seed = 7 };
+
+Network BuildNet(int seed0) {
+    var n = new Network();
+    n.AddLayer(new DenseLayer(8, 16, new ReLU(), seed0));
+    n.AddLayer(new DenseLayer(16, 8, new ReLU(), seed0 + 1));
+    n.AddLayer(new DenseLayer(8, 2, new Sigmoid(), seed0 + 2));
+    return n;
+}
+
+var mse2 = new MSELoss();
+var sgd2 = new SGDOptimizer();
+var baseNet = BuildNet(50);
+
+var entries = new (ITrainingStrategy s, Network net)[]
+{
+    (new SequentialStrategy(mse2, sgd2),                                        baseNet.Clone()),
+    (new DataParallelStrategy(mse2, sgd2, threadCount: 4),                      baseNet.Clone()),
+    (new DataParallelStrategy(mse2, sgd2, threadCount: 4, useThreadPool: true), baseNet.Clone()),
+};
+
+Console.WriteLine($"{"Strategy",-38} | {"Time (ms)",9} | {"Final loss",10} | {"Speedup",7}");
+Console.WriteLine(new string('-', 72));
+
+long seqTime = 0;
+foreach (var (s, net) in entries)
+{
+    var cfg = new TrainingConfig
+    {
+        Epochs = benchConfig.Epochs, BatchSize = benchConfig.BatchSize,
+        LearningRate = benchConfig.LearningRate, Seed = benchConfig.Seed
+    };
+    var sw = Stopwatch.StartNew();
+    var res = new Trainer(s, cfg).Train(net, benchDataset);
+    sw.Stop();
+
+    long elapsed = sw.ElapsedMilliseconds;
+    if (seqTime == 0) seqTime = elapsed;
+    double speedup = seqTime / (double)elapsed;
+
+    Console.WriteLine($"{s.Name,-38} | {elapsed,9} | {res.FinalLoss,10:F6} | {speedup,7:F2}x");
+}
