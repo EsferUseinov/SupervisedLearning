@@ -223,3 +223,34 @@ foreach (var (s, net) in entries)
 
     Console.WriteLine($"{s.Name,-38} | {elapsed,9} | {res.FinalLoss,10:F6} | {speedup,7:F2}x");
 }
+
+Console.WriteLine();
+Console.WriteLine("=== Correctness Verifier ===");
+
+var verifyDataset = DataLoader.GenerateSynthetic(samples: 128, inputSize: 4, outputSize: 2, seed: 55);
+var verifyBase = new Network();
+verifyBase.AddLayer(new DenseLayer(4, 8, new ReLU(), seed: 30));
+verifyBase.AddLayer(new DenseLayer(8, 2, new Sigmoid(), seed: 31));
+
+var mse3 = new MSELoss();
+var sgd3 = new SGDOptimizer();
+
+var seqStrategy = new SequentialStrategy(mse3, sgd3);
+var parStrategy = new DataParallelStrategy(mse3, sgd3, threadCount: 4);
+
+var verifier = new CorrectnessVerifier(
+    sequential: seqStrategy,
+    parallel: parStrategy,
+    batchSize: 32,
+    learningRate: 0.05,
+    epsilon: 1e-8);
+
+var netA = verifyBase.Clone();
+var netB = verifyBase.Clone();
+
+double maxDiff2 = verifier.MaxWeightDiff(netA, netB, verifyDataset, seed: 42);
+bool correct = maxDiff2 <= 1e-8;
+
+Console.WriteLine($"Sequential vs DataParallel-Thread-4");
+Console.WriteLine($"Max weight diff: {maxDiff2:E4}  (epsilon=1e-8)");
+Console.WriteLine($"Correctness:     {(correct ? "PASSED" : "FAILED")}");
