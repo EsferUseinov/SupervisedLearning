@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using SupervisedLearning.Benchmark;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Activations;
 using SupervisedLearning.Core.Interfaces;
@@ -254,3 +255,45 @@ bool correct = maxDiff2 <= 1e-8;
 Console.WriteLine($"Sequential vs DataParallel-Thread-4");
 Console.WriteLine($"Max weight diff: {maxDiff2:E4}  (epsilon=1e-8)");
 Console.WriteLine($"Correctness:     {(correct ? "PASSED" : "FAILED")}");
+
+Console.WriteLine();
+Console.WriteLine("=== Benchmark: Compare ===");
+
+var bmDataset = DataLoader.GenerateSynthetic(samples: 1000, inputSize: 8, outputSize: 2, seed: 11);
+var bmConfig = new TrainingConfig { Epochs = 5, BatchSize = 64, LearningRate = 0.05, Seed = 1, ThreadCount = 4 };
+
+Network BmNet() {
+    var n = new Network();
+    n.AddLayer(new DenseLayer(8, 16, new ReLU(), seed: 70));
+    n.AddLayer(new DenseLayer(16, 8, new ReLU(), seed: 71));
+    n.AddLayer(new DenseLayer(8, 2, new Sigmoid(), seed: 72));
+    return n;
+}
+
+var bmMse = new MSELoss();
+var bmSgd = new SGDOptimizer();
+var bmRunner = new BenchmarkRunner(bmMse, bmSgd);
+
+var compareReport = bmRunner.Compare(
+    strategies: new ITrainingStrategy[]
+    {
+        new SequentialStrategy(bmMse, bmSgd),
+        new DataParallelStrategy(bmMse, bmSgd, threadCount: 4),
+        new DataParallelStrategy(bmMse, bmSgd, threadCount: 4, useThreadPool: true),
+    },
+    network: BmNet(),
+    dataset: bmDataset,
+    config: bmConfig);
+
+compareReport.Print();
+
+Console.WriteLine();
+Console.WriteLine("=== Benchmark: ScalabilitySweep ===");
+
+var sweepReport = bmRunner.ScalabilitySweep(
+    network: BmNet(),
+    dataset: bmDataset,
+    config: bmConfig,
+    threadCounts: new[] { 1, 2, 4 });
+
+sweepReport.Print();
