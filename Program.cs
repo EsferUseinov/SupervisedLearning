@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using SupervisedLearning.Benchmark;
+using SupervisedLearning.Experiment;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Activations;
 using SupervisedLearning.Core.Interfaces;
@@ -297,3 +298,30 @@ var sweepReport = bmRunner.ScalabilitySweep(
     threadCounts: new[] { 1, 2, 4 });
 
 sweepReport.Print();
+
+Console.WriteLine();
+Console.WriteLine("=== Experiment: Parameter Sweep ===");
+
+var expDataset = DataLoader.GenerateSynthetic(samples: 400, inputSize: 4, outputSize: 2, seed: 33);
+var expMse = new MSELoss();
+var expSgd = new SGDOptimizer();
+
+var runner = new ExperimentRunner(expDataset, expMse, expSgd);
+
+var baseConfig = ExperimentConfig.Default();
+var grid = new ParameterGrid
+{
+    LearningRates = new[] { 0.001, 0.01, 0.05 },
+    BatchSizes = new[] { 16, 64 }
+};
+
+var expResults = runner.RunSweep(baseConfig, grid);
+
+Console.WriteLine($"{"LR",6} | {"Batch",5} | {"Threads",7} | {"Final Loss",10} | {"Val Acc",8} | Strategy");
+Console.WriteLine(new string('-', 68));
+foreach (var r in expResults)
+{
+    var cfg = r.Config.TrainingConfig;
+    Console.WriteLine($"{cfg.LearningRate,6:F3} | {cfg.BatchSize,5} | {cfg.ThreadCount,7} | " +
+        $"{r.TrainingResult.FinalLoss,10:F6} | {r.ValidationAccuracy,8:F4} | {r.TrainingResult.StrategyName}");
+}
