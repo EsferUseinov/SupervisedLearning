@@ -9,11 +9,11 @@ public class ExperimentConfig
 
     public static ExperimentConfig Default() => new ExperimentConfig
     {
-        NetworkTopology = new[] { 4, 16, 8, 2 },
+        NetworkTopology = new[] { 784, 256, 128, 10 },
         TrainingConfig = new TrainingConfig
         {
-            Epochs = 20,
-            BatchSize = 32,
+            Epochs = 5,
+            BatchSize = 64,
             LearningRate = 0.01,
             ThreadCount = 4,
             Seed = 42
