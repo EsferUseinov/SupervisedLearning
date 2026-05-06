@@ -10,6 +10,9 @@ obj/
 *.DS_Store
 Thumbs.db
 *.log
+*.txt
+*.labels
+datasets/
 TestResults/
 [Pp]ublish/
 artifacts/
