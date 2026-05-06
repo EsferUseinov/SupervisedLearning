@@ -68,8 +68,8 @@ public class DenseLayer : ILayer
         }
 
         var dx = new double[InputSize];
-        for (int j = 0; j < InputSize; j++)
-            for (int i = 0; i < OutputSize; i++)
+        for (int i = 0; i < OutputSize; i++)
+            for (int j = 0; j < InputSize; j++)
                 dx[j] += _weights[i, j] * dz[i];
 
         return dx;
@@ -90,6 +90,13 @@ public class DenseLayer : ILayer
                 _weights[i, j] -= learningRate * gradients.WeightGradients[i, j];
             _bias[i] -= learningRate * gradients.BiasGradients[i];
         }
+    }
+
+    public void CopyWeightsTo(ILayer target)
+    {
+        var dense = (DenseLayer)target;
+        Array.Copy(_weights, dense._weights, _weights.Length);
+        Array.Copy(_bias, dense._bias, _bias.Length);
     }
 
     public ILayer Clone()

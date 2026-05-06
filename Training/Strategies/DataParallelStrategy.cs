@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Threading;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Interfaces;
+using SupervisedLearning.Core.Layers;
 using SupervisedLearning.Data;
 
 public class DataParallelStrategy : ITrainingStrategy
@@ -12,6 +13,11 @@ public class DataParallelStrategy : ITrainingStrategy
     private readonly IOptimizer _optimizer;
     private readonly int _threadCount;
     private readonly bool _useThreadPool;
+
+    private Network[]? _networkClones;
+    private GradientPacket[][]? _threadGradients;
+    private GradientPacket[]? _accumulated;
+    private double[]? _threadLosses;
 
     public DataParallelStrategy(ILossFunction lossFunction, IOptimizer optimizer,
         int threadCount, bool useThreadPool = false)
@@ -26,46 +32,80 @@ public class DataParallelStrategy : ITrainingStrategy
         ? $"DataParallel-ThreadPool-{_threadCount}"
         : $"DataParallel-Thread-{_threadCount}";
 
+    private void EnsureInitialized(Network network)
+    {
+        if (_networkClones != null) return;
+
+        int layerCount = network.Layers.Count;
+
+        _networkClones = new Network[_threadCount];
+        _threadGradients = new GradientPacket[_threadCount][];
+        _accumulated = new GradientPacket[layerCount];
+        _threadLosses = new double[_threadCount];
+
+        for (int t = 0; t < _threadCount; t++)
+        {
+            _networkClones[t] = network.Clone();
+            _threadGradients[t] = new GradientPacket[layerCount];
+            for (int l = 0; l < layerCount; l++)
+                _threadGradients[t][l] = new GradientPacket(
+                    network.Layers[l].InputSize, network.Layers[l].OutputSize);
+        }
+
+        for (int l = 0; l < layerCount; l++)
+            _accumulated[l] = new GradientPacket(
+                network.Layers[l].InputSize, network.Layers[l].OutputSize);
+    }
+
+    private static void SyncWeights(Network source, Network target)
+    {
+        for (int i = 0; i < source.Layers.Count; i++)
+            ((DenseLayer)source.Layers[i]).CopyWeightsTo(target.Layers[i]);
+    }
+
     public EpochResult RunEpoch(Network network, DataSample[] batch, double learningRate)
     {
         var epochTimer = Stopwatch.StartNew();
+
+        EnsureInitialized(network);
 
         int layerCount = network.Layers.Count;
         DataSample[][] chunks = SplitIntoChunks(batch, _threadCount);
         int actualThreads = chunks.Length;
 
-        var networkClones = new Network[actualThreads];
-        var threadGradients = new GradientPacket[actualThreads][];
-        var threadLosses = new double[actualThreads];
-
         for (int t = 0; t < actualThreads; t++)
         {
-            networkClones[t] = network.Clone();
-            threadGradients[t] = new GradientPacket[layerCount];
+            SyncWeights(network, _networkClones![t]);
             for (int l = 0; l < layerCount; l++)
-                threadGradients[t][l] = new GradientPacket(
-                    network.Layers[l].InputSize, network.Layers[l].OutputSize);
+                _threadGradients![t][l].Reset();
         }
 
         if (_useThreadPool)
-            RunWithThreadPool(networkClones, chunks, threadGradients, threadLosses);
+            RunWithThreadPool(_networkClones!, chunks, _threadGradients!, _threadLosses!, actualThreads);
         else
-            RunWithThreads(networkClones, chunks, threadGradients, threadLosses);
+            RunWithThreads(_networkClones!, chunks, _threadGradients!, _threadLosses!, actualThreads);
 
         var syncTimer = Stopwatch.StartNew();
-        GradientPacket[] accumulated = AccumulateGradients(threadGradients, layerCount);
+
+        for (int l = 0; l < layerCount; l++)
+        {
+            _accumulated![l].Reset();
+            for (int t = 0; t < actualThreads; t++)
+                _accumulated[l].Accumulate(_threadGradients![t][l]);
+        }
+
         syncTimer.Stop();
 
         for (int l = 0; l < layerCount; l++)
         {
-            accumulated[l].Scale(1.0 / batch.Length);
-            _optimizer.UpdateWeights(network.Layers[l], accumulated[l], learningRate);
+            _accumulated![l].Scale(1.0 / batch.Length);
+            _optimizer.UpdateWeights(network.Layers[l], _accumulated[l], learningRate);
         }
 
         epochTimer.Stop();
 
         double totalLoss = 0.0;
-        foreach (double loss in threadLosses) totalLoss += loss;
+        for (int t = 0; t < actualThreads; t++) totalLoss += _threadLosses![t];
 
         return new EpochResult
         {
@@ -82,10 +122,11 @@ public class DataParallelStrategy : ITrainingStrategy
         Network[] networkClones,
         DataSample[][] chunks,
         GradientPacket[][] threadGradients,
-        double[] threadLosses)
+        double[] threadLosses,
+        int actualThreads)
     {
-        var threads = new Thread[networkClones.Length];
-        for (int t = 0; t < networkClones.Length; t++)
+        var threads = new Thread[actualThreads];
+        for (int t = 0; t < actualThreads; t++)
         {
             int idx = t;
             threads[t] = new Thread(() =>
@@ -99,10 +140,11 @@ public class DataParallelStrategy : ITrainingStrategy
         Network[] networkClones,
         DataSample[][] chunks,
         GradientPacket[][] threadGradients,
-        double[] threadLosses)
+        double[] threadLosses,
+        int actualThreads)
     {
-        using var countdown = new CountdownEvent(networkClones.Length);
-        for (int t = 0; t < networkClones.Length; t++)
+        using var countdown = new CountdownEvent(actualThreads);
+        for (int t = 0; t < actualThreads; t++)
         {
             int idx = t;
             ThreadPool.QueueUserWorkItem(_ =>
@@ -122,8 +164,6 @@ public class DataParallelStrategy : ITrainingStrategy
         int threadIdx)
     {
         int layerCount = networkClone.Layers.Count;
-        foreach (var g in layerGradients) g.Reset();
-
         double totalLoss = 0.0;
 
         foreach (var sample in chunk)
@@ -159,20 +199,5 @@ public class DataParallelStrategy : ITrainingStrategy
             offset += size;
         }
         return chunks;
-    }
-
-    private static GradientPacket[] AccumulateGradients(GradientPacket[][] threadGradients, int layerCount)
-    {
-        var accumulated = new GradientPacket[layerCount];
-        for (int l = 0; l < layerCount; l++)
-        {
-            int outputSize = threadGradients[0][l].WeightGradients.GetLength(0);
-            int inputSize = threadGradients[0][l].WeightGradients.GetLength(1);
-            accumulated[l] = new GradientPacket(inputSize, outputSize);
-
-            for (int t = 0; t < threadGradients.Length; t++)
-                accumulated[l].Accumulate(threadGradients[t][l]);
-        }
-        return accumulated;
     }
 }
