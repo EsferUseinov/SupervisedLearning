@@ -2,48 +2,34 @@ namespace SupervisedLearning.Core;
 
 public class GradientPacket
 {
-    public double[,] WeightGradients { get; }
+    public double[] WeightGradients { get; }
     public double[] BiasGradients { get; }
 
-    public GradientPacket(int inputSize, int outputSize)
+    public GradientPacket(int weightCount, int biasCount)
     {
-        WeightGradients = new double[outputSize, inputSize];
-        BiasGradients = new double[outputSize];
+        WeightGradients = new double[weightCount];
+        BiasGradients = new double[biasCount];
     }
 
     public void Accumulate(GradientPacket other)
     {
-        int rows = WeightGradients.GetLength(0);
-        int cols = WeightGradients.GetLength(1);
-        for (int i = 0; i < rows; i++)
-        {
-            for (int j = 0; j < cols; j++)
-                WeightGradients[i, j] += other.WeightGradients[i, j];
+        for (int i = 0; i < WeightGradients.Length; i++)
+            WeightGradients[i] += other.WeightGradients[i];
+        for (int i = 0; i < BiasGradients.Length; i++)
             BiasGradients[i] += other.BiasGradients[i];
-        }
     }
 
     public void Scale(double factor)
     {
-        int rows = WeightGradients.GetLength(0);
-        int cols = WeightGradients.GetLength(1);
-        for (int i = 0; i < rows; i++)
-        {
-            for (int j = 0; j < cols; j++)
-                WeightGradients[i, j] *= factor;
+        for (int i = 0; i < WeightGradients.Length; i++)
+            WeightGradients[i] *= factor;
+        for (int i = 0; i < BiasGradients.Length; i++)
             BiasGradients[i] *= factor;
-        }
     }
 
     public void Reset()
     {
-        int rows = WeightGradients.GetLength(0);
-        int cols = WeightGradients.GetLength(1);
-        for (int i = 0; i < rows; i++)
-        {
-            for (int j = 0; j < cols; j++)
-                WeightGradients[i, j] = 0.0;
-            BiasGradients[i] = 0.0;
-        }
+        Array.Clear(WeightGradients);
+        Array.Clear(BiasGradients);
     }
 }

@@ -11,6 +11,7 @@ obj/
 Thumbs.db
 *.log
 *.txt
+*.bin
 *.labels
 datasets/
 TestResults/

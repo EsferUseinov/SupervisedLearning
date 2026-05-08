@@ -25,14 +25,10 @@ public class SequentialStrategy : ITrainingStrategy
         var backwardTimer = new Stopwatch();
 
         int layerCount = network.Layers.Count;
-        var localGradients = new GradientPacket[layerCount];
-        for (int i = 0; i < layerCount; i++)
-        {
-            localGradients[i] = new GradientPacket(network.Layers[i].InputSize, network.Layers[i].OutputSize);
-            localGradients[i].Reset();
-        }
-
         double totalLoss = 0.0;
+
+        for (int i = 0; i < layerCount; i++)
+            network.Layers[i].GetGradients().Reset();
 
         foreach (var sample in batch)
         {
@@ -46,18 +42,12 @@ public class SequentialStrategy : ITrainingStrategy
             backwardTimer.Start();
             network.Backward(lossGrad);
             backwardTimer.Stop();
-
-            for (int i = 0; i < layerCount; i++)
-            {
-                localGradients[i].Accumulate(network.Layers[i].GetGradients());
-                network.Layers[i].GetGradients().Reset();
-            }
         }
 
         for (int i = 0; i < layerCount; i++)
         {
-            localGradients[i].Scale(1.0 / batch.Length);
-            _optimizer.UpdateWeights(network.Layers[i], localGradients[i], learningRate);
+            network.Layers[i].GetGradients().Scale(1.0 / batch.Length);
+            _optimizer.UpdateWeights(network.Layers[i], network.Layers[i].GetGradients(), learningRate);
         }
 
         epochTimer.Stop();

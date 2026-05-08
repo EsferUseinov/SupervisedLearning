@@ -30,13 +30,4 @@ public class DataSet
         return batches;
     }
 
-    public DataSet[] TrainTestSplit(double trainRatio)
-    {
-        int trainCount = (int)(Samples.Length * trainRatio);
-        var train = new DataSample[trainCount];
-        var test = new DataSample[Samples.Length - trainCount];
-        Array.Copy(Samples, 0, train, 0, trainCount);
-        Array.Copy(Samples, trainCount, test, 0, test.Length);
-        return new[] { new DataSet(train), new DataSet(test) };
-    }
 }

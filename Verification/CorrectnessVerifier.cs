@@ -2,7 +2,6 @@ namespace SupervisedLearning.Verification;
 
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Interfaces;
-using SupervisedLearning.Core.Layers;
 using SupervisedLearning.Data;
 
 public class CorrectnessVerifier
@@ -65,25 +64,11 @@ public class CorrectnessVerifier
     private static double ComputeMaxWeightDiff(Network networkA, Network networkB)
     {
         double maxDiff = 0.0;
-
         for (int l = 0; l < networkA.Layers.Count; l++)
         {
-            var layerA = (DenseLayer)networkA.Layers[l];
-            var layerB = (DenseLayer)networkB.Layers[l];
-
-            for (int i = 0; i < layerA.OutputSize; i++)
-            {
-                for (int j = 0; j < layerA.InputSize; j++)
-                {
-                    double diff = Math.Abs(layerA.GetWeight(i, j) - layerB.GetWeight(i, j));
-                    if (diff > maxDiff) maxDiff = diff;
-                }
-
-                double biasDiff = Math.Abs(layerA.GetBias(i) - layerB.GetBias(i));
-                if (biasDiff > maxDiff) maxDiff = biasDiff;
-            }
+            double diff = networkA.Layers[l].MaxAbsDiff(networkB.Layers[l]);
+            if (diff > maxDiff) maxDiff = diff;
         }
-
         return maxDiff;
     }
 }

@@ -20,50 +20,6 @@ public class BenchmarkRunner
         _optimizer = optimizer;
     }
 
-    public BenchmarkReport Compare(
-        ITrainingStrategy[] strategies,
-        Network network,
-        DataSet dataset,
-        TrainingConfig config)
-    {
-        var results = new TrainingResult[strategies.Length];
-
-        for (int s = 0; s < strategies.Length; s++)
-        {
-            for (int w = 0; w < WarmupRuns; w++)
-                new Trainer(strategies[s], config).Train(network.Clone(), dataset);
-
-            long totalMs = 0;
-            TrainingResult last = null!;
-            for (int r = 0; r < MeasuredRuns; r++)
-            {
-                last = new Trainer(strategies[s], config).Train(network.Clone(), dataset);
-                totalMs += last.TotalDurationMs;
-            }
-
-            results[s] = new TrainingResult
-            {
-                EpochResults = last.EpochResults,
-                TotalDurationMs = totalMs / MeasuredRuns,
-                FinalLoss = last.FinalLoss,
-                StrategyName = strategies[s].Name,
-                LossCurve = last.LossCurve
-            };
-        }
-
-        double baselineMs = results[0].TotalDurationMs;
-        double parallelMs = results.Length > 1 ? results[1].TotalDurationMs : baselineMs;
-        double speedup = baselineMs / Math.Max(parallelMs, 1);
-        double efficiency = config.ThreadCount > 0 ? speedup / config.ThreadCount : 1.0;
-
-        return new BenchmarkReport
-        {
-            Results = results,
-            Speedup = speedup,
-            Efficiency = efficiency
-        };
-    }
-
     public BenchmarkReport ScalabilitySweep(
         Network network,
         DataSet dataset,
@@ -107,5 +63,52 @@ public class BenchmarkRunner
         }
 
         return new BenchmarkReport { ScalabilityData = entries };
+    }
+
+    public BenchmarkReport DataSizeSweep(
+        Network network,
+        DataSet fullDataset,
+        TrainingConfig config,
+        int[] sampleCounts,
+        int parallelThreads)
+    {
+        var seqStrategy = new SequentialStrategy(_lossFunction, _optimizer);
+        var parStrategy = new DataParallelStrategy(_lossFunction, _optimizer, parallelThreads);
+        var entries = new DataSizeEntry[sampleCounts.Length];
+
+        for (int i = 0; i < sampleCounts.Length; i++)
+        {
+            int n = Math.Min(sampleCounts[i], fullDataset.Samples.Length);
+            var subset = new DataSet(fullDataset.Samples[..n]);
+
+            for (int w = 0; w < WarmupRuns; w++)
+            {
+                new Trainer(seqStrategy, config).Train(network.Clone(), subset);
+                new Trainer(parStrategy, config).Train(network.Clone(), subset);
+            }
+
+            long seqTotal = 0;
+            long parTotal = 0;
+            for (int r = 0; r < MeasuredRuns; r++)
+            {
+                seqTotal += new Trainer(seqStrategy, config).Train(network.Clone(), subset).TotalDurationMs;
+                parTotal += new Trainer(parStrategy, config).Train(network.Clone(), subset).TotalDurationMs;
+            }
+
+            long seqAvg = seqTotal / MeasuredRuns;
+            long parAvg = parTotal / MeasuredRuns;
+            double speedup = seqAvg / (double)Math.Max(parAvg, 1);
+
+            entries[i] = new DataSizeEntry
+            {
+                SampleCount = n,
+                SeqTimeMs = seqAvg,
+                ParTimeMs = parAvg,
+                Speedup = speedup,
+                Efficiency = speedup / parallelThreads
+            };
+        }
+
+        return new BenchmarkReport { DataSizeData = entries };
     }
 }

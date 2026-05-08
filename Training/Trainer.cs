@@ -23,10 +23,16 @@ public class Trainer
         var epochResults = new List<EpochResult>();
         var lossCurve = new List<double>();
 
+        network.SetTrainingMode(true);
         var totalTimer = Stopwatch.StartNew();
+        double currentLr = _config.LearningRate;
 
         for (int epoch = 0; epoch < _config.Epochs; epoch++)
         {
+            foreach (int step in _config.LrDecaySteps)
+                if (epoch == step)
+                    currentLr *= _config.LrDecayFactor;
+
             double epochLoss = 0.0;
             long epochForwardMs = 0;
             long epochBackwardMs = 0;
@@ -35,7 +41,7 @@ public class Trainer
 
             foreach (var batch in batches)
             {
-                var batchResult = _strategy.RunEpoch(network, batch, _config.LearningRate);
+                var batchResult = _strategy.RunEpoch(network, batch, currentLr);
                 epochLoss += batchResult.Loss;
                 epochForwardMs += batchResult.ForwardTimeMs;
                 epochBackwardMs += batchResult.BackwardTimeMs;
@@ -51,7 +57,8 @@ public class Trainer
                 BackwardTimeMs = epochBackwardMs,
                 SyncTimeMs = 0,
                 EpochDurationMs = epochTimer.ElapsedMilliseconds,
-                SamplesProcessed = samplesProcessed
+                SamplesProcessed = samplesProcessed,
+                LearningRate = currentLr
             };
 
             epochResults.Add(epochResult);
@@ -59,6 +66,7 @@ public class Trainer
         }
 
         totalTimer.Stop();
+        network.SetTrainingMode(false);
 
         return new TrainingResult
         {

@@ -8,4 +8,5 @@ public class EpochResult
     public long SyncTimeMs { get; set; }
     public int SamplesProcessed { get; set; }
     public double Loss { get; set; }
+    public double LearningRate { get; set; }
 }

@@ -6,65 +6,93 @@ using SupervisedLearning.Core.Activations;
 using SupervisedLearning.Core.Layers;
 using SupervisedLearning.Core.Loss;
 using SupervisedLearning.Data;
+using SupervisedLearning.Data.Preprocessing;
 using SupervisedLearning.Training;
 using SupervisedLearning.Training.Optimizers;
 using SupervisedLearning.Training.Strategies;
+using SupervisedLearning.Evaluation;
+using SupervisedLearning.Inference;
 using SupervisedLearning.Verification;
 
 // ── Paths ─────────────────────────────────────────────────────────────────
-const string TrainPath    = "mnist_train.csv";
-const string TestPath     = "mnist_test.csv";
-const string ModelPath    = "mnist_model.bin";
-const string SeqCachePath = "seq_cache.txt";
+const string ArticlesDir  = "datasets/train-articles";
+const string LabelsPath          = "datasets/train-task2-TC.labels";
+const string SyntheticLabelsPath = "datasets/synthetic-task2-TC.labels";
+const string SeqCachePath        = "seq_cache.txt";
+const string ModelPath           = "model.bin";
+
+// ── Architecture ──────────────────────────────────────────────────────────
+const int    VocabSize       = 5000;
+const int    SeqLen          = 32;
+const int    EmbDim          = 32;
+const int    FilterSize      = 3;
+const int    NumFilters      = 64;
+const int    DenseHidden     = 32;
+const int    NumClasses      = 9;
+const int    OutputLen       = SeqLen - FilterSize + 1;
 
 // ── Hyperparameters ───────────────────────────────────────────────────────
-const int    TrainSamples    = 60_000;
-const int    BenchSamples    = 3_000;
-const int    TrainEpochs     = 10;
+const int    TrainEpochs     = 200;
 const int    BenchEpochs     = 2;
-const int    BatchSize       = 64;
-const double LearningRate    = 0.01;
-const int    ParallelThreads = 4;
+const int    BatchSize       = 256;
+const double LearningRate    = 0.04;
+const int    ParallelThreads = 6;
+int[]        LrDecaySteps    = Array.Empty<int>();
+const double LrDecayFactor   = 0.5;
+const int    WarmupSamples   = 200;
+const int    WarmupEpochs    = 2;
+const double DropoutRate     = 0.0;
 
 // ── Section switches ──────────────────────────────────────────────────────
-//
-//  LoadSeqFromCache = true:  пропустити послідовне навчання, завантажити
-//                            результат із seq_cache.txt та модель із mnist_model.bin
-//  SaveSeqToCache = true:    зберегти результат після послідовного навчання
-//
-//  Типові сценарії:
-//    Тільки паралельне:   RunSequential = false, LoadSeqFromCache = true
-//    Тільки scalability:  RunSequential = false, RunParallel* = false,
-//                         RunScalability = true, решта = false
-//
-bool RunSequential     = false;
-bool SaveSeqToCache    = false;
-bool LoadSeqFromCache  = true;
-bool RunParallelThread = true;
-bool RunParallelPool   = true;
-bool RunAccuracy       = true;
-bool RunVerification   = true;
-bool RunScalability    = true;
-bool RunSizeVsSpeedup  = true;
+bool UseSyntheticData      = true;
+bool RunSequential         = true;
+bool LoadSeqFromCache      = false;
+bool SaveSeqToCache        = true;
+bool LoadModelWeights      = false;
+bool SaveModelWeights      = true;
+bool RunParallelThread     = true;
+bool RunParallelPool       = true;
+bool RunParallelPersistent = true;
+bool RunAccuracy           = true;
+bool RunVerification       = true;
+bool RunReport             = true;
+bool RunGradientCheck      = false;
+bool RunScalability        = true;
+bool RunDataSizeSweep      = true;
+bool RunTextScan           = false;
+bool RunWarmupBeforeTrain  = true;
+bool RunWarmupBeforeBench  = true;
+bool WarmupForwardOnly     = false;
 
-// ── Load Data ─────────────────────────────────────────────────────────────
-Console.WriteLine("=== Loading MNIST ===");
+// ── Load data ─────────────────────────────────────────────────────────────
+Console.WriteLine("=== Loading SemEval-2020 Task 11 ===");
 var loadTimer = Stopwatch.StartNew();
-var fullTrain = DataLoader.LoadFromCsv(TrainPath);
-var testSet = DataLoader.LoadFromCsv(TestPath);
-loadTimer.Stop();
-Console.WriteLine($"Train: {fullTrain.Samples.Length} samples  " +
-                  $"Test: {testSet.Samples.Length} samples  ({loadTimer.ElapsedMilliseconds} ms)");
 
-var trainSet = new DataSet(fullTrain.Samples[..TrainSamples]);
+Console.Write("  Building vocabulary... ");
+var vocab = SemEvalLoader.BuildVocabulary(ArticlesDir, VocabSize);
+Console.WriteLine($"{vocab.Size} tokens");
+
+Console.Write("  Loading samples... ");
+string? syntheticPath = UseSyntheticData && File.Exists(SyntheticLabelsPath) ? SyntheticLabelsPath : null;
+var (trainSet, valSet) = SemEvalLoader.LoadWithSplit(
+    ArticlesDir, LabelsPath, vocab, SeqLen,
+    totalNotPropSamples: 2000, trainRatio: 0.8, seed: 67,
+    extraLabelsPath: syntheticPath);
+loadTimer.Stop();
+
+double[] classWeights = SemEvalLoader.ComputeClassWeights(trainSet);
+Console.WriteLine($"done ({loadTimer.ElapsedMilliseconds} ms)");
+Console.WriteLine($"  Train: {trainSet.Samples.Length}  Val: {valSet.Samples.Length}");
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-Network BuildNet(int seed = 0)
+Network BuildNet(int seed = 0, double dropoutRate = DropoutRate)
 {
     var n = new Network();
-    n.AddLayer(new DenseLayer(784, 256, new ReLU(), seed));
-    n.AddLayer(new DenseLayer(256, 128, new ReLU(), seed + 1));
-    n.AddLayer(new DenseLayer(128, 10, new Sigmoid(), seed + 2));
+    n.AddLayer(new EmbeddingLayer(vocab.Size, EmbDim, SeqLen, seed));
+    n.AddLayer(new Conv1DLayer(SeqLen, EmbDim, FilterSize, NumFilters, new ReLU(), seed + 1));
+    n.AddLayer(new MaxPool1DLayer(OutputLen, NumFilters));
+    n.AddLayer(new DenseLayer(NumFilters, DenseHidden, new ReLU(), seed + 2, dropoutRate));
+    n.AddLayer(new DenseLayer(DenseHidden, NumClasses, new Softmax(), seed + 3));
     return n;
 }
 
@@ -80,8 +108,7 @@ double ComputeAccuracy(Network net, DataSample[] samples)
 {
     int correct = 0;
     foreach (var s in samples)
-        if (ArgMax(net.Forward(s.Input)) == ArgMax(s.Label))
-            correct++;
+        if (ArgMax(net.Forward(s.Input)) == ArgMax(s.Label)) correct++;
     return (double)correct / samples.Length;
 }
 
@@ -89,8 +116,15 @@ void PrintEpochTable(TrainingResult r)
 {
     Console.WriteLine($"  {"Ep",3} | {"Loss",10} | {"Time (ms)",10}");
     Console.WriteLine($"  {new string('-', 30)}");
+    double prevLr = r.EpochResults.Length > 0 ? r.EpochResults[0].LearningRate : 0;
     for (int i = 0; i < r.EpochResults.Length; i++)
+    {
+        double lr = r.EpochResults[i].LearningRate;
+        if (i > 0 && Math.Abs(lr - prevLr) > 1e-12)
+            Console.WriteLine($"  ** LR decay: {prevLr:G4} → {lr:G4} **");
         Console.WriteLine($"  {i + 1,3} | {r.EpochResults[i].Loss,10:F6} | {r.EpochResults[i].EpochDurationMs,10}");
+        prevLr = lr;
+    }
     Console.WriteLine($"  Total: {r.TotalDurationMs} ms  Final loss: {r.FinalLoss:F6}");
 }
 
@@ -139,156 +173,241 @@ void SaveSeqCache(TrainingResult r)
     Console.WriteLine($"  Seq result cached → {SeqCachePath}");
 }
 
-var loss = new CrossEntropyLoss();
-var sgd = new SGDOptimizer();
+var loss = new CrossEntropyLoss(classWeights);
+var sgd  = new SGDOptimizer();
+
+void RunWarmup(string label, bool forwardOnly)
+{
+    Console.Write($"  [warmup: {label}]... ");
+    var sw = Stopwatch.StartNew();
+    var warmupNet = BuildNet(seed: 0);
+    int n = Math.Min(WarmupSamples, trainSet.Samples.Length);
+    var warmupData = new DataSet(trainSet.Samples[..n]);
+    if (forwardOnly)
+    {
+        for (int w = 0; w < WarmupEpochs; w++)
+            foreach (var s in warmupData.Samples)
+                warmupNet.Forward(s.Input);
+    }
+    else
+    {
+        var warmupCfg = new TrainingConfig
+        {
+            Epochs = WarmupEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 0
+        };
+        new Trainer(new SequentialStrategy(loss, sgd), warmupCfg).Train(warmupNet, warmupData);
+    }
+    sw.Stop();
+    Console.WriteLine($"done ({sw.ElapsedMilliseconds} ms)");
+}
 
 var trainCfg = new TrainingConfig
 {
-    Epochs = TrainEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 42
+    Epochs = TrainEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 42,
+    LrDecaySteps = LrDecaySteps, LrDecayFactor = LrDecayFactor
 };
+
+Console.WriteLine($"\n=== Sequential vs Parallel ({trainSet.Samples.Length} samples, {TrainEpochs} epochs) ===");
+Console.WriteLine($"    1D-CNN: Emb({vocab.Size},{EmbDim}) → Conv({FilterSize}×{NumFilters}) → MaxPool → Dense({DenseHidden}) → {NumClasses}");
+
+if (RunWarmupBeforeTrain)
+    RunWarmup("JIT pre-train", WarmupForwardOnly);
 
 // ── 1. Sequential ─────────────────────────────────────────────────────────
 TrainingResult? seqResult = null;
 Network? seqNet = null;
 
-Console.WriteLine($"\n=== Sequential vs Parallel ({TrainSamples} samples, {TrainEpochs} epochs) ===");
-Console.WriteLine($"    Network: 784 -> 256 -> 128 -> 10  |  Loss: CrossEntropy  |  Batch: {BatchSize}");
+if (LoadModelWeights && File.Exists(ModelPath))
+{
+    Console.WriteLine($"\n  [Sequential — weights loaded from {ModelPath}]");
+    seqNet = BuildNet(seed: 42);
+    NetworkSerializer.Load(seqNet, ModelPath);
+}
 
-if (LoadSeqFromCache)
+if (seqNet == null && LoadSeqFromCache)
 {
     Console.WriteLine("\n  [Sequential — loaded from cache]");
     seqResult = LoadSeqCache();
-    if (seqResult != null && File.Exists(ModelPath))
-    {
-        seqNet = BuildNet(seed: 42);
-        NetworkSerializer.Load(seqNet, ModelPath);
-        PrintEpochTable(seqResult);
-    }
-    else if (seqResult != null)
-    {
-        Console.WriteLine($"  [cache] Model file not found: {ModelPath}  (accuracy skipped for Sequential)");
-    }
+    if (seqResult != null) PrintEpochTable(seqResult);
 }
-else if (RunSequential)
+
+if (seqNet == null && seqResult == null && RunSequential)
 {
     seqNet = BuildNet(seed: 42);
     Console.WriteLine("\n  [Sequential]");
     seqResult = new Trainer(new SequentialStrategy(loss, sgd), trainCfg).Train(seqNet, trainSet);
     PrintEpochTable(seqResult);
-
     if (SaveSeqToCache) SaveSeqCache(seqResult);
-
-    NetworkSerializer.Save(seqNet, ModelPath);
-    Console.WriteLine($"  Model saved → {ModelPath}");
+    if (SaveModelWeights)
+    {
+        NetworkSerializer.Save(seqNet, ModelPath);
+        Console.WriteLine($"  Model weights saved → {ModelPath}");
+    }
 }
 
 // ── 2. Parallel — Thread ──────────────────────────────────────────────────
-TrainingResult? parResult = null;
-Network? parNet = null;
+TrainingResult? parResult  = null;
+Network?        parNet     = null;
 
 if (RunParallelThread)
 {
     parNet = BuildNet(seed: 42);
     Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, Thread-based]");
-    parResult = new Trainer(
-        new DataParallelStrategy(loss, sgd, threadCount: ParallelThreads), trainCfg)
+    parResult = new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads), trainCfg)
         .Train(parNet, trainSet);
     PrintEpochTable(parResult);
 }
 
 // ── 3. Parallel — ThreadPool ──────────────────────────────────────────────
 TrainingResult? parResult2 = null;
-Network? parNet2 = null;
+Network?        parNet2    = null;
 
 if (RunParallelPool)
 {
     parNet2 = BuildNet(seed: 42);
     Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, ThreadPool-based]");
     parResult2 = new Trainer(
-        new DataParallelStrategy(loss, sgd, threadCount: ParallelThreads, useThreadPool: true), trainCfg)
+        new DataParallelStrategy(loss, sgd, ParallelThreads, useThreadPool: true), trainCfg)
         .Train(parNet2, trainSet);
     PrintEpochTable(parResult2);
 }
 
+// ── 3b. Parallel — Persistent Threads ────────────────────────────────────
+TrainingResult? parResult3 = null;
+Network?        parNet3    = null;
+
+if (RunParallelPersistent)
+{
+    parNet3 = BuildNet(seed: 42);
+    Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, Persistent Thread-based]");
+    using var persistentStrategy = new DataParallelStrategy(
+        loss, sgd, ParallelThreads, useThreadPool: false, usePersistentThreads: true);
+    parResult3 = new Trainer(persistentStrategy, trainCfg).Train(parNet3, trainSet);
+    PrintEpochTable(parResult3);
+}
+
 // ── Comparison table ──────────────────────────────────────────────────────
-if (seqResult != null && (parResult != null || parResult2 != null))
+if (seqResult != null && (parResult != null || parResult2 != null || parResult3 != null))
 {
     Console.WriteLine("\n  --- Comparison ---");
-    Console.WriteLine($"  {"Strategy",-30} | {"Time (ms)",10} | {"Speedup",8} | {"Loss diff",12}");
-    Console.WriteLine($"  {new string('-', 70)}");
-    Console.WriteLine($"  {"Sequential",-30} | {seqResult.TotalDurationMs,10} |   {"1.00x",6} | {"—",12}");
+    Console.WriteLine($"  {"Strategy",-40} | {"Time (ms)",10} | {"Speedup",8} | {"Loss diff",12}");
+    Console.WriteLine($"  {new string('-', 80)}");
+    Console.WriteLine($"  {"Sequential",-40} | {seqResult.TotalDurationMs,10} |   {"1.00x",6} | {"—",12}");
 
     if (parResult != null)
     {
         double sp = (double)seqResult.TotalDurationMs / parResult.TotalDurationMs;
         double ld = Math.Abs(seqResult.FinalLoss - parResult.FinalLoss);
-        Console.WriteLine($"  {"DataParallel-Thread-" + ParallelThreads,-30} | {parResult.TotalDurationMs,10} | {sp,7:F2}x | {ld,12:E4}");
+        Console.WriteLine($"  {"DataParallel-Thread-" + ParallelThreads,-40} | {parResult.TotalDurationMs,10} | {sp,7:F2}x | {ld,12:E4}");
     }
     if (parResult2 != null)
     {
         double sp = (double)seqResult.TotalDurationMs / parResult2.TotalDurationMs;
         double ld = Math.Abs(seqResult.FinalLoss - parResult2.FinalLoss);
-        Console.WriteLine($"  {"DataParallel-ThreadPool-" + ParallelThreads,-30} | {parResult2.TotalDurationMs,10} | {sp,7:F2}x | {ld,12:E4}");
+        Console.WriteLine($"  {"DataParallel-ThreadPool-" + ParallelThreads,-40} | {parResult2.TotalDurationMs,10} | {sp,7:F2}x | {ld,12:E4}");
+    }
+    if (parResult3 != null)
+    {
+        double sp = (double)seqResult.TotalDurationMs / parResult3.TotalDurationMs;
+        double ld = Math.Abs(seqResult.FinalLoss - parResult3.FinalLoss);
+        Console.WriteLine($"  {"DataParallel-Thread-" + ParallelThreads + "-Persistent",-40} | {parResult3.TotalDurationMs,10} | {sp,7:F2}x | {ld,12:E4}");
     }
 }
 
 // ── 4. Accuracy ───────────────────────────────────────────────────────────
-if (RunAccuracy && (seqNet != null || parNet != null || parNet2 != null))
+if (RunAccuracy && (seqNet != null || parNet != null || parNet2 != null || parNet3 != null))
 {
-    Console.WriteLine($"\n=== Test Set Accuracy ({testSet.Samples.Length} samples) ===");
-    if (seqNet != null) Console.WriteLine($"  Sequential:            {ComputeAccuracy(seqNet, testSet.Samples):P2}");
-    if (parNet != null) Console.WriteLine($"  Parallel (Thread):     {ComputeAccuracy(parNet, testSet.Samples):P2}");
-    if (parNet2 != null) Console.WriteLine($"  Parallel (ThreadPool): {ComputeAccuracy(parNet2, testSet.Samples):P2}");
+    Console.WriteLine($"\n=== Validation Accuracy ({valSet.Samples.Length} samples) ===");
+    if (seqNet  != null) Console.WriteLine($"  Sequential:                      {ComputeAccuracy(seqNet,  valSet.Samples):P2}");
+    if (parNet  != null) Console.WriteLine($"  Parallel (Thread):               {ComputeAccuracy(parNet,  valSet.Samples):P2}");
+    if (parNet2 != null) Console.WriteLine($"  Parallel (ThreadPool):           {ComputeAccuracy(parNet2, valSet.Samples):P2}");
+    if (parNet3 != null) Console.WriteLine($"  Parallel (Persistent Threads):   {ComputeAccuracy(parNet3, valSet.Samples):P2}");
 }
+
+// ── 4b. Classification report ─────────────────────────────────────────────
+if (RunReport && seqNet != null)
+    new ClassificationReport(seqNet, valSet.Samples, SemEvalLoader.Techniques).Print();
 
 // ── 5. Correctness verification ───────────────────────────────────────────
 if (RunVerification)
 {
-    Console.WriteLine("\n=== Correctness Verification (1000 samples) ===");
-    var verBase = BuildNet(seed: 7);
+    int verifySamples = Math.Min(500, trainSet.Samples.Length);
+    Console.WriteLine($"\n=== Correctness Verification ({verifySamples} samples) ===");
+    var verBase = BuildNet(seed: 7, dropoutRate: 0.0);
     var verifier = new CorrectnessVerifier(
         new SequentialStrategy(loss, sgd),
         new DataParallelStrategy(loss, sgd, ParallelThreads),
-        batchSize: BatchSize, learningRate: LearningRate, epsilon: 1e-8);
+        batchSize: BatchSize, learningRate: LearningRate, epsilon: 1e-7);
     double maxDiff = verifier.MaxWeightDiff(
         verBase.Clone(), verBase.Clone(),
-        new DataSet(trainSet.Samples[..1000]), seed: 42);
-    Console.WriteLine($"  Max weight diff (Sequential vs Parallel): {maxDiff:E4}  [{(maxDiff <= 1e-8 ? "PASSED" : "FAILED")}]");
+        new DataSet(trainSet.Samples[..verifySamples]), seed: 42);
+    Console.WriteLine($"  Max weight diff (Sequential vs Parallel): {maxDiff:E4}  [{(maxDiff <= 1e-7 ? "PASSED" : "FAILED")}]");
 }
+
+// ── 5b. Gradient check ────────────────────────────────────────────────────
+if (RunGradientCheck)
+{
+    Console.WriteLine($"\n=== Gradient Check (1 sample, all layer types) ===");
+    var gcNet = BuildNet(seed: 99, dropoutRate: 0.0);
+    var gcSample = trainSet.Samples[0];
+    var checker = new GradientChecker(epsilon: 1e-5, tolerance: 1e-4);
+    double maxErr = checker.ComputeMaxRelativeError(gcNet, loss, gcSample);
+    Console.WriteLine($"  Max relative error (all layers): {maxErr:E4}  [{(maxErr <= 1e-4 ? "PASSED" : "FAILED")}]");
+}
+
+if (RunWarmupBeforeBench && (RunScalability || RunDataSizeSweep))
+    RunWarmup("JIT pre-bench", WarmupForwardOnly);
 
 // ── 6. Scalability sweep ──────────────────────────────────────────────────
 if (RunScalability)
 {
-    Console.WriteLine($"\n=== Scalability: Thread Count ({BenchSamples} samples, {BenchEpochs} epochs) ===");
-    var benchSet = new DataSet(fullTrain.Samples[..BenchSamples]);
+    Console.WriteLine($"\n=== Scalability: Thread Count ({trainSet.Samples.Length} samples, {BenchEpochs} epochs) ===");
     var benchCfg = new TrainingConfig
     {
         Epochs = BenchEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 42
     };
     new BenchmarkRunner(loss, sgd)
-        .ScalabilitySweep(BuildNet(seed: 0), benchSet, benchCfg, new[] { 2, 4, 6, 8 })
+        .ScalabilitySweep(BuildNet(seed: 0), trainSet, benchCfg, new[] { 2, 4, 6, 8 })
         .Print();
 }
 
-// ── 7. Dataset size vs speedup ────────────────────────────────────────────
-if (RunSizeVsSpeedup)
+// ── 7. Dataset size sweep ─────────────────────────────────────────────────
+if (RunDataSizeSweep)
 {
-    Console.WriteLine($"\n=== Dataset Size vs Speedup ({ParallelThreads} threads, 2 epochs) ===");
-    var sizeCfg = new TrainingConfig
+    int[] dataSizes = { 500, 1000, 2000, Math.Min(4000, trainSet.Samples.Length), trainSet.Samples.Length };
+    dataSizes = dataSizes.Distinct().OrderBy(x => x).ToArray();
+    Console.WriteLine($"\n=== Scalability: Dataset Size ({ParallelThreads} threads, {BenchEpochs} epochs) ===");
+    var benchCfg2 = new TrainingConfig
     {
-        Epochs = 2, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 42
+        Epochs = BenchEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 42
     };
-    int[] sizes = { 1_000, 3_000, 5_000, 10_000 };
+    new BenchmarkRunner(loss, sgd)
+        .DataSizeSweep(BuildNet(seed: 0), trainSet, benchCfg2, dataSizes, ParallelThreads)
+        .Print();
+}
 
-    Console.WriteLine($"  {"Samples",10} | {"Sequential (ms)",15} | {"Parallel (ms)",14} | {"Speedup",8}");
-    Console.WriteLine($"  {new string('-', 58)}");
-    foreach (int n in sizes)
+// ── 8. Text scanning ──────────────────────────────────────────────────────
+if (RunTextScan && (seqNet != null || parNet != null || parNet2 != null || parNet3 != null))
+{
+    Console.WriteLine($"\n=== Text Scanning ===");
+    var net = seqNet ?? parNet ?? parNet2 ?? parNet3!;
+    var scanner = new TextScanner(net, vocab, SeqLen);
+
+    string[] articleFiles = Directory.GetFiles(ArticlesDir, "article*.txt");
+    if (articleFiles.Length > 0)
     {
-        var sub = new DataSet(fullTrain.Samples[..n]);
-        long sMs = new Trainer(new SequentialStrategy(loss, sgd), sizeCfg)
-                       .Train(BuildNet(seed: 0), sub).TotalDurationMs;
-        long pMs = new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads), sizeCfg)
-                       .Train(BuildNet(seed: 0), sub).TotalDurationMs;
-        Console.WriteLine($"  {n,10} | {sMs,15} | {pMs,14} | {(double)sMs / pMs,8:F2}x");
+        Array.Sort(articleFiles);
+        string articleText = File.ReadAllText(articleFiles[0]);
+        string articleName = Path.GetFileNameWithoutExtension(articleFiles[0]);
+        var spans = scanner.Scan(articleText, stride: 16, minConfidence: 0.5);
+        Console.WriteLine($"  {articleName}: {spans.Count} spans detected");
+        int show = Math.Min(spans.Count, 10);
+        for (int i = 0; i < show; i++)
+        {
+            var s = spans[i];
+            Console.WriteLine($"    [{s.StartChar,6}–{s.EndChar,6}] {s.Technique,-35} ({s.Confidence:P1})");
+        }
+        if (spans.Count > 10)
+            Console.WriteLine($"    ... and {spans.Count - 10} more");
     }
 }

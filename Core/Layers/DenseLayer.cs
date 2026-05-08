@@ -11,17 +11,24 @@ public class DenseLayer : ILayer
     private double[] _lastZ = Array.Empty<double>();
     private readonly GradientPacket _gradients;
 
+    private readonly double _dropoutRate;
+    private double[]? _dropoutMask;
+    private readonly Random _rng = new Random();
+
+    public bool IsTraining { get; set; }
+
     public int InputSize { get; }
     public int OutputSize { get; }
 
-    public DenseLayer(int inputSize, int outputSize, IActivation activation, int seed = 0)
+    public DenseLayer(int inputSize, int outputSize, IActivation activation, int seed = 0, double dropoutRate = 0.0)
     {
         InputSize = inputSize;
         OutputSize = outputSize;
         _activation = activation;
+        _dropoutRate = dropoutRate;
         _weights = new double[outputSize, inputSize];
         _bias = new double[outputSize];
-        _gradients = new GradientPacket(inputSize, outputSize);
+        _gradients = new GradientPacket(outputSize * inputSize, outputSize);
 
         var rng = new Random(seed);
         double scale = Math.Sqrt(2.0 / (inputSize + outputSize));
@@ -40,7 +47,6 @@ public class DenseLayer : ILayer
     {
         _lastInput = input;
         _lastZ = new double[OutputSize];
-        var output = new double[OutputSize];
 
         for (int i = 0; i < OutputSize; i++)
         {
@@ -48,7 +54,19 @@ public class DenseLayer : ILayer
             for (int j = 0; j < InputSize; j++)
                 z += _weights[i, j] * input[j];
             _lastZ[i] = z;
-            output[i] = _activation.Compute(z);
+        }
+
+        var output = _activation.ComputeVector(_lastZ);
+
+        if (IsTraining && _dropoutRate > 0.0)
+        {
+            _dropoutMask ??= new double[OutputSize];
+            double keepProb = 1.0 - _dropoutRate;
+            for (int i = 0; i < OutputSize; i++)
+            {
+                _dropoutMask[i] = _rng.NextDouble() < keepProb ? 1.0 / keepProb : 0.0;
+                output[i] *= _dropoutMask[i];
+            }
         }
 
         return output;
@@ -58,12 +76,17 @@ public class DenseLayer : ILayer
     {
         var dz = new double[OutputSize];
         for (int i = 0; i < OutputSize; i++)
-            dz[i] = gradientFromNext[i] * _activation.Derivative(_lastZ[i]);
+        {
+            double g = gradientFromNext[i];
+            if (IsTraining && _dropoutRate > 0.0 && _dropoutMask != null)
+                g *= _dropoutMask[i];
+            dz[i] = g * _activation.Derivative(_lastZ[i]);
+        }
 
         for (int i = 0; i < OutputSize; i++)
         {
             for (int j = 0; j < InputSize; j++)
-                _gradients.WeightGradients[i, j] += dz[i] * _lastInput[j];
+                _gradients.WeightGradients[i * InputSize + j] += dz[i] * _lastInput[j];
             _gradients.BiasGradients[i] += dz[i];
         }
 
@@ -81,27 +104,45 @@ public class DenseLayer : ILayer
     public void SetBias(int i, double value) => _bias[i] = value;
 
     public GradientPacket GetGradients() => _gradients;
+    public GradientPacket CreateEmptyGradients() => new GradientPacket(OutputSize * InputSize, OutputSize);
 
     public void ApplyGradients(GradientPacket gradients, double learningRate)
     {
         for (int i = 0; i < OutputSize; i++)
         {
             for (int j = 0; j < InputSize; j++)
-                _weights[i, j] -= learningRate * gradients.WeightGradients[i, j];
+                _weights[i, j] -= learningRate * gradients.WeightGradients[i * InputSize + j];
             _bias[i] -= learningRate * gradients.BiasGradients[i];
         }
     }
 
-    public void CopyWeightsTo(ILayer target)
+    public void SyncFrom(ILayer source)
     {
-        var dense = (DenseLayer)target;
-        Array.Copy(_weights, dense._weights, _weights.Length);
-        Array.Copy(_bias, dense._bias, _bias.Length);
+        var src = (DenseLayer)source;
+        Array.Copy(src._weights, _weights, _weights.Length);
+        Array.Copy(src._bias, _bias, _bias.Length);
+    }
+
+    public double MaxAbsDiff(ILayer other)
+    {
+        var o = (DenseLayer)other;
+        double max = 0.0;
+        for (int i = 0; i < OutputSize; i++)
+        {
+            for (int j = 0; j < InputSize; j++)
+            {
+                double d = Math.Abs(_weights[i, j] - o._weights[i, j]);
+                if (d > max) max = d;
+            }
+            double bd = Math.Abs(_bias[i] - o._bias[i]);
+            if (bd > max) max = bd;
+        }
+        return max;
     }
 
     public ILayer Clone()
     {
-        var clone = new DenseLayer(InputSize, OutputSize, _activation);
+        var clone = new DenseLayer(InputSize, OutputSize, _activation, dropoutRate: _dropoutRate);
         Array.Copy(_weights, clone._weights, _weights.Length);
         Array.Copy(_bias, clone._bias, _bias.Length);
         return clone;

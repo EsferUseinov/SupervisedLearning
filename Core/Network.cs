@@ -32,6 +32,13 @@ public class Network
         return grad;
     }
 
+    public void SetTrainingMode(bool training)
+    {
+        foreach (var layer in _layers)
+            if (layer is Layers.DenseLayer dense)
+                dense.IsTraining = training;
+    }
+
     public Network Clone()
     {
         var clone = new Network();

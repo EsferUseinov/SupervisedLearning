@@ -31,7 +31,7 @@ public class GradientChecker
         var analytical = new GradientPacket[network.Layers.Count];
         for (int l = 0; l < network.Layers.Count; l++)
         {
-            var copy = new GradientPacket(network.Layers[l].InputSize, network.Layers[l].OutputSize);
+            var copy = network.Layers[l].CreateEmptyGradients();
             copy.Accumulate(network.Layers[l].GetGradients());
             analytical[l] = copy;
         }
@@ -40,49 +40,132 @@ public class GradientChecker
 
         for (int l = 0; l < network.Layers.Count; l++)
         {
-            var dense = (DenseLayer)network.Layers[l];
-
-            for (int i = 0; i < dense.OutputSize; i++)
+            double layerErr = network.Layers[l] switch
             {
-                for (int j = 0; j < dense.InputSize; j++)
-                {
-                    double orig = dense.GetWeight(i, j);
+                DenseLayer dense     => CheckDense(network, loss, sample, dense, analytical[l]),
+                EmbeddingLayer emb   => CheckEmbedding(network, loss, sample, emb, analytical[l]),
+                Conv1DLayer conv     => CheckConv1D(network, loss, sample, conv, analytical[l]),
+                _                    => 0.0
+            };
+            if (layerErr > maxError) maxError = layerErr;
+        }
 
-                    dense.SetWeight(i, j, orig + _epsilon);
-                    double lossPlus = loss.Compute(network.Forward(sample.Input), sample.Label);
+        return maxError;
+    }
 
-                    dense.SetWeight(i, j, orig - _epsilon);
-                    double lossMinus = loss.Compute(network.Forward(sample.Input), sample.Label);
+    private double CheckDense(Network network, ILossFunction loss, DataSample sample,
+        DenseLayer dense, GradientPacket analytical)
+    {
+        double maxError = 0.0;
 
-                    dense.SetWeight(i, j, orig);
+        for (int i = 0; i < dense.OutputSize; i++)
+        {
+            for (int j = 0; j < dense.InputSize; j++)
+            {
+                double orig = dense.GetWeight(i, j);
 
-                    double numerical = (lossPlus - lossMinus) / (2.0 * _epsilon);
-                    double analyticalVal = analytical[l].WeightGradients[i, j];
-                    double relErr = Math.Abs(analyticalVal - numerical) /
-                        (Math.Abs(analyticalVal) + Math.Abs(numerical) + 1e-8);
+                dense.SetWeight(i, j, orig + _epsilon);
+                double lp = loss.Compute(network.Forward(sample.Input), sample.Label);
 
-                    if (relErr > maxError) maxError = relErr;
-                }
+                dense.SetWeight(i, j, orig - _epsilon);
+                double lm = loss.Compute(network.Forward(sample.Input), sample.Label);
 
-                double origBias = dense.GetBias(i);
+                dense.SetWeight(i, j, orig);
 
-                dense.SetBias(i, origBias + _epsilon);
-                double lossPlusBias = loss.Compute(network.Forward(sample.Input), sample.Label);
+                double err = RelErr(analytical.WeightGradients[i * dense.InputSize + j],
+                    (lp - lm) / (2.0 * _epsilon));
+                if (err > maxError) maxError = err;
+            }
 
-                dense.SetBias(i, origBias - _epsilon);
-                double lossMinusBias = loss.Compute(network.Forward(sample.Input), sample.Label);
+            double origBias = dense.GetBias(i);
 
-                dense.SetBias(i, origBias);
+            dense.SetBias(i, origBias + _epsilon);
+            double lpb = loss.Compute(network.Forward(sample.Input), sample.Label);
 
-                double numericalBias = (lossPlusBias - lossMinusBias) / (2.0 * _epsilon);
-                double analyticalBias = analytical[l].BiasGradients[i];
-                double relErrBias = Math.Abs(analyticalBias - numericalBias) /
-                    (Math.Abs(analyticalBias) + Math.Abs(numericalBias) + 1e-8);
+            dense.SetBias(i, origBias - _epsilon);
+            double lmb = loss.Compute(network.Forward(sample.Input), sample.Label);
 
-                if (relErrBias > maxError) maxError = relErrBias;
+            dense.SetBias(i, origBias);
+
+            double errBias = RelErr(analytical.BiasGradients[i], (lpb - lmb) / (2.0 * _epsilon));
+            if (errBias > maxError) maxError = errBias;
+        }
+
+        return maxError;
+    }
+
+    private double CheckEmbedding(Network network, ILossFunction loss, DataSample sample,
+        EmbeddingLayer emb, GradientPacket analytical)
+    {
+        var seenTokens = new HashSet<int>();
+        for (int i = 0; i < sample.Input.Length; i++)
+            seenTokens.Add((int)sample.Input[i]);
+
+        double maxError = 0.0;
+
+        foreach (int tokenIdx in seenTokens)
+        {
+            for (int d = 0; d < emb.EmbeddingDim; d++)
+            {
+                int flatIdx = tokenIdx * emb.EmbeddingDim + d;
+                double orig = emb.GetTableEntry(flatIdx);
+
+                emb.SetTableEntry(flatIdx, orig + _epsilon);
+                double lp = loss.Compute(network.Forward(sample.Input), sample.Label);
+
+                emb.SetTableEntry(flatIdx, orig - _epsilon);
+                double lm = loss.Compute(network.Forward(sample.Input), sample.Label);
+
+                emb.SetTableEntry(flatIdx, orig);
+
+                double err = RelErr(analytical.WeightGradients[flatIdx], (lp - lm) / (2.0 * _epsilon));
+                if (err > maxError) maxError = err;
             }
         }
 
         return maxError;
     }
+
+    private double CheckConv1D(Network network, ILossFunction loss, DataSample sample,
+        Conv1DLayer conv, GradientPacket analytical)
+    {
+        double maxError = 0.0;
+
+        for (int i = 0; i < conv.FilterWeightCount; i++)
+        {
+            double orig = conv.GetFilter(i);
+
+            conv.SetFilter(i, orig + _epsilon);
+            double lp = loss.Compute(network.Forward(sample.Input), sample.Label);
+
+            conv.SetFilter(i, orig - _epsilon);
+            double lm = loss.Compute(network.Forward(sample.Input), sample.Label);
+
+            conv.SetFilter(i, orig);
+
+            double err = RelErr(analytical.WeightGradients[i], (lp - lm) / (2.0 * _epsilon));
+            if (err > maxError) maxError = err;
+        }
+
+        for (int f = 0; f < conv.NumFilters; f++)
+        {
+            double orig = conv.GetConvBias(f);
+
+            conv.SetConvBias(f, orig + _epsilon);
+            double lp = loss.Compute(network.Forward(sample.Input), sample.Label);
+
+            conv.SetConvBias(f, orig - _epsilon);
+            double lm = loss.Compute(network.Forward(sample.Input), sample.Label);
+
+            conv.SetConvBias(f, orig);
+
+            double err = RelErr(analytical.BiasGradients[f], (lp - lm) / (2.0 * _epsilon));
+            if (err > maxError) maxError = err;
+        }
+
+        return maxError;
+    }
+
+    private static double RelErr(double analytical, double numerical) =>
+        Math.Abs(analytical - numerical) / (Math.Abs(analytical) + Math.Abs(numerical) + 1e-8);
 }
