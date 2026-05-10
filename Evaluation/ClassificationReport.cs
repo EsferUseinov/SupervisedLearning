@@ -29,8 +29,8 @@ public sealed class ClassificationReport
 
         foreach (var s in samples)
         {
-            int predicted = ArgMax(net.Forward(s.Input));
-            int actual    = ArgMax(s.Label);
+            int predicted = MathHelper.ArgMax(net.Forward(s.Input));
+            int actual    = MathHelper.ArgMax(s.Label);
 
             _support[actual]++;
             if (predicted == actual)
@@ -102,11 +102,4 @@ public sealed class ClassificationReport
         Console.WriteLine($"  Precision: {bP:F2}   Recall: {bR:F2}   F1: {bF1:F2}");
     }
 
-    private static int ArgMax(double[] v)
-    {
-        int idx = 0;
-        for (int i = 1; i < v.Length; i++)
-            if (v[i] > v[idx]) idx = i;
-        return idx;
-    }
 }

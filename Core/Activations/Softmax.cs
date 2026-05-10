@@ -4,11 +4,7 @@ using SupervisedLearning.Core.Interfaces;
 
 public class Softmax : IActivation
 {
-    public double Compute(double x) =>
-        throw new NotSupportedException("Softmax is defined only for vectors.");
-
     public double Derivative(double x) => 1.0;
-
 
     public double[] ComputeVector(double[] x)
     {
@@ -26,12 +22,5 @@ public class Softmax : IActivation
         for (int i = 0; i < x.Length; i++)
             result[i] /= sum;
         return result;
-    }
-
-    public double[] DerivativeVector(double[] x)
-    {
-        var ones = new double[x.Length];
-        Array.Fill(ones, 1.0);
-        return ones;
     }
 }

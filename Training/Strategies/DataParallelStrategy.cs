@@ -1,6 +1,5 @@
 namespace SupervisedLearning.Training.Strategies;
 
-using System.Diagnostics;
 using System.Threading;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Interfaces;
@@ -26,10 +25,6 @@ public class DataParallelStrategy : ITrainingStrategy
         _threadCount = threadCount;
         _useThreadPool = useThreadPool;
     }
-
-    public string Name => _useThreadPool
-        ? $"DataParallel-ThreadPool-{_threadCount}"
-        : $"DataParallel-Thread-{_threadCount}";
 
     private void EnsureInitialized(Network network)
     {
@@ -60,10 +55,8 @@ public class DataParallelStrategy : ITrainingStrategy
             target.Layers[i].SyncFrom(source.Layers[i]);
     }
 
-    public EpochResult RunEpoch(Network network, DataSample[] batch, double learningRate)
+    public double RunEpoch(Network network, DataSample[] batch, double learningRate)
     {
-        var epochTimer = Stopwatch.StartNew();
-
         EnsureInitialized(network);
 
         int layerCount = network.Layers.Count;
@@ -95,16 +88,10 @@ public class DataParallelStrategy : ITrainingStrategy
             _optimizer.UpdateWeights(network.Layers[l], _accumulated[l], learningRate);
         }
 
-        epochTimer.Stop();
-
         double totalLoss = 0.0;
         for (int t = 0; t < actualThreads; t++) totalLoss += _threadLosses![t];
 
-        return new EpochResult
-        {
-            Loss = totalLoss / batch.Length,
-            EpochDurationMs = epochTimer.ElapsedMilliseconds
-        };
+        return totalLoss / batch.Length;
     }
 
     private void RunWithThreads(

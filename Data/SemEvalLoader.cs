@@ -1,5 +1,6 @@
 namespace SupervisedLearning.Data;
 
+using SupervisedLearning.Core;
 using SupervisedLearning.Data.Preprocessing;
 
 public static class SemEvalLoader
@@ -14,7 +15,7 @@ public static class SemEvalLoader
         "Appeal_to_fear-prejudice",
         "Flag-Waving",
         "Causal_Oversimplification",
-        "Unrecognized"
+        "Other"
     };
 
     private static readonly HashSet<string> ValidTechniqueSet =
@@ -114,7 +115,7 @@ public static class SemEvalLoader
     {
         var counts = new int[NumClasses];
         foreach (var sample in trainSet.Samples)
-            counts[ArgMax(sample.Label)]++;
+            counts[MathHelper.ArgMax(sample.Label)]++;
         double total = trainSet.Samples.Length;
         var weights = new double[NumClasses];
         for (int c = 0; c < NumClasses; c++)
@@ -225,11 +226,4 @@ public static class SemEvalLoader
         }
     }
 
-    private static int ArgMax(double[] v)
-    {
-        int idx = 0;
-        for (int i = 1; i < v.Length; i++)
-            if (v[i] > v[idx]) idx = i;
-        return idx;
-    }
 }

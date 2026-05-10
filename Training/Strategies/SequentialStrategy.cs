@@ -1,6 +1,5 @@
 namespace SupervisedLearning.Training.Strategies;
 
-using System.Diagnostics;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Interfaces;
 using SupervisedLearning.Data;
@@ -10,18 +9,14 @@ public class SequentialStrategy : ITrainingStrategy
     private readonly ILossFunction _lossFunction;
     private readonly IOptimizer _optimizer;
 
-    public string Name => "Sequential";
-
     public SequentialStrategy(ILossFunction lossFunction, IOptimizer optimizer)
     {
         _lossFunction = lossFunction;
         _optimizer = optimizer;
     }
 
-    public EpochResult RunEpoch(Network network, DataSample[] batch, double learningRate)
+    public double RunEpoch(Network network, DataSample[] batch, double learningRate)
     {
-        var epochTimer = Stopwatch.StartNew();
-
         int layerCount = network.Layers.Count;
         double totalLoss = 0.0;
 
@@ -41,12 +36,6 @@ public class SequentialStrategy : ITrainingStrategy
             _optimizer.UpdateWeights(network.Layers[i], network.Layers[i].GetGradients(), learningRate);
         }
 
-        epochTimer.Stop();
-
-        return new EpochResult
-        {
-            Loss = totalLoss / batch.Length,
-            EpochDurationMs = epochTimer.ElapsedMilliseconds
-        };
+        return totalLoss / batch.Length;
     }
 }

@@ -27,19 +27,20 @@ public class Trainer
             var batches = dataset.CreateBatches(_config.BatchSize);
 
             double epochLoss = 0.0;
+            int epochSamples = 0;
             var epochTimer = Stopwatch.StartNew();
 
             foreach (var batch in batches)
             {
-                var batchResult = _strategy.RunEpoch(network, batch, _config.LearningRate);
-                epochLoss += batchResult.Loss;
+                epochLoss += _strategy.RunEpoch(network, batch, _config.LearningRate) * batch.Length;
+                epochSamples += batch.Length;
             }
 
             epochTimer.Stop();
 
             epochResults.Add(new EpochResult
             {
-                Loss = epochLoss / batches.Length,
+                Loss = epochLoss / epochSamples,
                 EpochDurationMs = epochTimer.ElapsedMilliseconds
             });
         }

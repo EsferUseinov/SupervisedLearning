@@ -32,7 +32,7 @@ const int    NumClasses      = 9;
 const int    OutputLen       = SeqLen - FilterSize + 1;
 
 // ── Hyperparameters ───────────────────────────────────────────────────────
-const int    TrainEpochs     = 10;
+const int    TrainEpochs     = 200;
 const int    BenchEpochs     = 2;
 const int    BatchSize       = 256;
 const double LearningRate    = 0.04;
@@ -92,19 +92,11 @@ Network BuildNet(int seed = 0)
     return n;
 }
 
-int ArgMax(double[] v)
-{
-    int idx = 0;
-    for (int i = 1; i < v.Length; i++)
-        if (v[i] > v[idx]) idx = i;
-    return idx;
-}
-
 double ComputeAccuracy(Network net, DataSample[] samples)
 {
     int correct = 0;
     foreach (var s in samples)
-        if (ArgMax(net.Forward(s.Input)) == ArgMax(s.Label)) correct++;
+        if (MathHelper.ArgMax(net.Forward(s.Input)) == MathHelper.ArgMax(s.Label)) correct++;
     return (double)correct / samples.Length;
 }
 
@@ -219,7 +211,6 @@ if (seqNet == null && LoadSeqFromCache)
 
 if (seqNet == null && seqResult == null && RunSequential)
 {
-    trainSet.Shuffle(trainCfg.Seed - 1);
     seqNet = BuildNet(seed: 67);
     Console.WriteLine("\n  [Sequential]");
     seqResult = new Trainer(new SequentialStrategy(loss, sgd), trainCfg).Train(seqNet, trainSet);
@@ -238,7 +229,6 @@ Network?        parNet     = null;
 
 if (RunParallelThread)
 {
-    trainSet.Shuffle(trainCfg.Seed - 1);
     parNet = BuildNet(seed: 67);
     Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, Thread-based]");
     parResult = new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads), trainCfg)
@@ -252,7 +242,6 @@ Network?        parNet2    = null;
 
 if (RunParallelPool)
 {
-    trainSet.Shuffle(trainCfg.Seed - 1);
     parNet2 = BuildNet(seed: 67);
     Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, ThreadPool-based]");
     parResult2 = new Trainer(

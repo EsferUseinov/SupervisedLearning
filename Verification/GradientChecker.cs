@@ -16,12 +16,6 @@ public class GradientChecker
         _tolerance = tolerance;
     }
 
-    public bool Check(Network network, ILossFunction loss, DataSample sample) =>
-        Evaluate(network, loss, sample).MaxError <= _tolerance;
-
-    public double ComputeMaxRelativeError(Network network, ILossFunction loss, DataSample sample) =>
-        Evaluate(network, loss, sample).MaxError;
-
     public (double MaxError, int Passed, int Total) Evaluate(Network network, ILossFunction loss, DataSample sample)
     {
         foreach (var layer in network.Layers)
