@@ -37,7 +37,7 @@ public static class SemEvalLoader
         int seqLen = 32,
         int totalNotPropSamples = 2000,
         double trainRatio = 0.8,
-        int seed = 42,
+        int seed = 67,
         string? extraLabelsPath = null)
     {
         var spans = ParseLabels(labelsPath);

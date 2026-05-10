@@ -26,15 +26,6 @@ public class CorrectnessVerifier
         _epsilon = epsilon;
     }
 
-    public bool DeterministicCompare(
-        Network networkA,
-        Network networkB,
-        DataSet dataset,
-        int seed)
-    {
-        return MaxWeightDiff(networkA, networkB, dataset, seed) <= _epsilon;
-    }
-
     public double MaxWeightDiff(
         Network networkA,
         Network networkB,

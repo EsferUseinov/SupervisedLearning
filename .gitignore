@@ -12,6 +12,7 @@ Thumbs.db
 *.log
 *.txt
 *.bin
+*.md
 *.labels
 datasets/
 TestResults/

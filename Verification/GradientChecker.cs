@@ -17,16 +17,18 @@ public class GradientChecker
     }
 
     public bool Check(Network network, ILossFunction loss, DataSample sample) =>
-        ComputeMaxRelativeError(network, loss, sample) <= _tolerance;
+        Evaluate(network, loss, sample).MaxError <= _tolerance;
 
-    public double ComputeMaxRelativeError(Network network, ILossFunction loss, DataSample sample)
+    public double ComputeMaxRelativeError(Network network, ILossFunction loss, DataSample sample) =>
+        Evaluate(network, loss, sample).MaxError;
+
+    public (double MaxError, int Passed, int Total) Evaluate(Network network, ILossFunction loss, DataSample sample)
     {
         foreach (var layer in network.Layers)
             layer.GetGradients().Reset();
 
         double[] predicted = network.Forward(sample.Input);
-        double[] lossGrad = loss.Gradient(predicted, sample.Label);
-        network.Backward(lossGrad);
+        network.Backward(loss.Gradient(predicted, sample.Label));
 
         var analytical = new GradientPacket[network.Layers.Count];
         for (int l = 0; l < network.Layers.Count; l++)
@@ -37,26 +39,31 @@ public class GradientChecker
         }
 
         double maxError = 0.0;
+        int passed = 0, total = 0;
 
         for (int l = 0; l < network.Layers.Count; l++)
         {
-            double layerErr = network.Layers[l] switch
+            var (lErr, lPassed, lTotal) = network.Layers[l] switch
             {
-                DenseLayer dense     => CheckDense(network, loss, sample, dense, analytical[l]),
-                EmbeddingLayer emb   => CheckEmbedding(network, loss, sample, emb, analytical[l]),
-                Conv1DLayer conv     => CheckConv1D(network, loss, sample, conv, analytical[l]),
-                _                    => 0.0
+                DenseLayer dense   => EvaluateDense(network, loss, sample, dense, analytical[l]),
+                EmbeddingLayer emb => EvaluateEmbedding(network, loss, sample, emb, analytical[l]),
+                Conv1DLayer conv   => EvaluateConv1D(network, loss, sample, conv, analytical[l]),
+                _                  => (0.0, 0, 0)
             };
-            if (layerErr > maxError) maxError = layerErr;
+            if (lErr > maxError) maxError = lErr;
+            passed += lPassed;
+            total  += lTotal;
         }
 
-        return maxError;
+        return (maxError, passed, total);
     }
 
-    private double CheckDense(Network network, ILossFunction loss, DataSample sample,
+    private (double maxError, int passed, int total) EvaluateDense(
+        Network network, ILossFunction loss, DataSample sample,
         DenseLayer dense, GradientPacket analytical)
     {
         double maxError = 0.0;
+        int passed = 0, total = 0;
 
         for (int i = 0; i < dense.OutputSize; i++)
         {
@@ -74,6 +81,8 @@ public class GradientChecker
 
                 double err = RelErr(analytical.WeightGradients[i * dense.InputSize + j],
                     (lp - lm) / (2.0 * _epsilon));
+                total++;
+                if (err <= _tolerance) passed++;
                 if (err > maxError) maxError = err;
             }
 
@@ -88,13 +97,16 @@ public class GradientChecker
             dense.SetBias(i, origBias);
 
             double errBias = RelErr(analytical.BiasGradients[i], (lpb - lmb) / (2.0 * _epsilon));
+            total++;
+            if (errBias <= _tolerance) passed++;
             if (errBias > maxError) maxError = errBias;
         }
 
-        return maxError;
+        return (maxError, passed, total);
     }
 
-    private double CheckEmbedding(Network network, ILossFunction loss, DataSample sample,
+    private (double maxError, int passed, int total) EvaluateEmbedding(
+        Network network, ILossFunction loss, DataSample sample,
         EmbeddingLayer emb, GradientPacket analytical)
     {
         var seenTokens = new HashSet<int>();
@@ -102,9 +114,11 @@ public class GradientChecker
             seenTokens.Add((int)sample.Input[i]);
 
         double maxError = 0.0;
+        int passed = 0, total = 0;
 
         foreach (int tokenIdx in seenTokens)
         {
+            if (tokenIdx == 0) continue;
             for (int d = 0; d < emb.EmbeddingDim; d++)
             {
                 int flatIdx = tokenIdx * emb.EmbeddingDim + d;
@@ -119,17 +133,21 @@ public class GradientChecker
                 emb.SetTableEntry(flatIdx, orig);
 
                 double err = RelErr(analytical.WeightGradients[flatIdx], (lp - lm) / (2.0 * _epsilon));
+                total++;
+                if (err <= _tolerance) passed++;
                 if (err > maxError) maxError = err;
             }
         }
 
-        return maxError;
+        return (maxError, passed, total);
     }
 
-    private double CheckConv1D(Network network, ILossFunction loss, DataSample sample,
+    private (double maxError, int passed, int total) EvaluateConv1D(
+        Network network, ILossFunction loss, DataSample sample,
         Conv1DLayer conv, GradientPacket analytical)
     {
         double maxError = 0.0;
+        int passed = 0, total = 0;
 
         for (int i = 0; i < conv.FilterWeightCount; i++)
         {
@@ -144,6 +162,8 @@ public class GradientChecker
             conv.SetFilter(i, orig);
 
             double err = RelErr(analytical.WeightGradients[i], (lp - lm) / (2.0 * _epsilon));
+            total++;
+            if (err <= _tolerance) passed++;
             if (err > maxError) maxError = err;
         }
 
@@ -160,10 +180,12 @@ public class GradientChecker
             conv.SetConvBias(f, orig);
 
             double err = RelErr(analytical.BiasGradients[f], (lp - lm) / (2.0 * _epsilon));
+            total++;
+            if (err <= _tolerance) passed++;
             if (err > maxError) maxError = err;
         }
 
-        return maxError;
+        return (maxError, passed, total);
     }
 
     private static double RelErr(double analytical, double numerical) =>

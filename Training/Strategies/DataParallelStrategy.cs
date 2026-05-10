@@ -6,39 +6,30 @@ using SupervisedLearning.Core;
 using SupervisedLearning.Core.Interfaces;
 using SupervisedLearning.Data;
 
-public class DataParallelStrategy : ITrainingStrategy, IDisposable
+public class DataParallelStrategy : ITrainingStrategy
 {
     private readonly ILossFunction _lossFunction;
     private readonly IOptimizer _optimizer;
     private readonly int _threadCount;
     private readonly bool _useThreadPool;
-    private readonly bool _usePersistentThreads;
 
     private Network[]? _networkClones;
     private GradientPacket[][]? _threadGradients;
     private GradientPacket[]? _accumulated;
     private double[]? _threadLosses;
 
-    private SemaphoreSlim[]? _startSignals;
-    private SemaphoreSlim? _doneSignal;
-    private volatile bool _stopping;
-    private DataSample[][]? _currentChunks;
-
     public DataParallelStrategy(ILossFunction lossFunction, IOptimizer optimizer,
-        int threadCount, bool useThreadPool = false, bool usePersistentThreads = false)
+        int threadCount, bool useThreadPool = false)
     {
         _lossFunction = lossFunction;
         _optimizer = optimizer;
         _threadCount = threadCount;
         _useThreadPool = useThreadPool;
-        _usePersistentThreads = usePersistentThreads && !useThreadPool;
     }
 
-    public string Name => _usePersistentThreads
-        ? $"DataParallel-Thread-{_threadCount}-Persistent"
-        : _useThreadPool
-            ? $"DataParallel-ThreadPool-{_threadCount}"
-            : $"DataParallel-Thread-{_threadCount}";
+    public string Name => _useThreadPool
+        ? $"DataParallel-ThreadPool-{_threadCount}"
+        : $"DataParallel-Thread-{_threadCount}";
 
     private void EnsureInitialized(Network network)
     {
@@ -54,7 +45,6 @@ public class DataParallelStrategy : ITrainingStrategy, IDisposable
         for (int t = 0; t < _threadCount; t++)
         {
             _networkClones[t] = network.Clone();
-            _networkClones[t].SetTrainingMode(true);
             _threadGradients[t] = new GradientPacket[layerCount];
             for (int l = 0; l < layerCount; l++)
                 _threadGradients[t][l] = network.Layers[l].CreateEmptyGradients();
@@ -62,35 +52,6 @@ public class DataParallelStrategy : ITrainingStrategy, IDisposable
 
         for (int l = 0; l < layerCount; l++)
             _accumulated[l] = network.Layers[l].CreateEmptyGradients();
-
-        if (_usePersistentThreads)
-            StartWorkerThreads();
-    }
-
-    private void StartWorkerThreads()
-    {
-        _startSignals = new SemaphoreSlim[_threadCount];
-        _doneSignal = new SemaphoreSlim(0);
-
-        for (int t = 0; t < _threadCount; t++)
-        {
-            _startSignals[t] = new SemaphoreSlim(0, 1);
-            int idx = t;
-            var thread = new Thread(() => WorkerLoop(idx));
-            thread.IsBackground = true;
-            thread.Start();
-        }
-    }
-
-    private void WorkerLoop(int idx)
-    {
-        while (true)
-        {
-            _startSignals![idx].Wait();
-            if (_stopping) return;
-            ProcessChunk(_networkClones![idx], _currentChunks![idx], _threadGradients![idx], _threadLosses!, idx);
-            _doneSignal!.Release();
-        }
     }
 
     private static void SyncWeights(Network source, Network target)
@@ -116,14 +77,10 @@ public class DataParallelStrategy : ITrainingStrategy, IDisposable
                 _threadGradients![t][l].Reset();
         }
 
-        if (_usePersistentThreads)
-            RunWithPersistentThreads(chunks, actualThreads);
-        else if (_useThreadPool)
+        if (_useThreadPool)
             RunWithThreadPool(_networkClones!, chunks, _threadGradients!, _threadLosses!, actualThreads);
         else
             RunWithThreads(_networkClones!, chunks, _threadGradients!, _threadLosses!, actualThreads);
-
-        var syncTimer = Stopwatch.StartNew();
 
         for (int l = 0; l < layerCount; l++)
         {
@@ -131,8 +88,6 @@ public class DataParallelStrategy : ITrainingStrategy, IDisposable
             for (int t = 0; t < actualThreads; t++)
                 _accumulated[l].Accumulate(_threadGradients![t][l]);
         }
-
-        syncTimer.Stop();
 
         for (int l = 0; l < layerCount; l++)
         {
@@ -148,21 +103,8 @@ public class DataParallelStrategy : ITrainingStrategy, IDisposable
         return new EpochResult
         {
             Loss = totalLoss / batch.Length,
-            ForwardTimeMs = 0,
-            BackwardTimeMs = 0,
-            SyncTimeMs = syncTimer.ElapsedMilliseconds,
-            EpochDurationMs = epochTimer.ElapsedMilliseconds,
-            SamplesProcessed = batch.Length
+            EpochDurationMs = epochTimer.ElapsedMilliseconds
         };
-    }
-
-    private void RunWithPersistentThreads(DataSample[][] chunks, int actualThreads)
-    {
-        _currentChunks = chunks;
-        for (int t = 0; t < actualThreads; t++)
-            _startSignals![t].Release();
-        for (int t = 0; t < actualThreads; t++)
-            _doneSignal!.Wait();
     }
 
     private void RunWithThreads(
@@ -245,12 +187,5 @@ public class DataParallelStrategy : ITrainingStrategy, IDisposable
             offset += size;
         }
         return chunks;
-    }
-
-    public void Dispose()
-    {
-        if (_startSignals == null || _stopping) return;
-        _stopping = true;
-        foreach (var sig in _startSignals) sig.Release();
     }
 }

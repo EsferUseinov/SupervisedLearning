@@ -53,12 +53,15 @@ public sealed class ClassificationReport
         _bTP = bTP; _bFP = bFP; _bFN = bFN; _bTN = bTN;
     }
 
-    public void Print()
+    public void Print(string label = "")
     {
         int n     = _classNames.Length;
         int total = _support.Sum();
 
-        Console.WriteLine($"\n=== Classification Report ({total} samples) ===");
+        string heading = label.Length > 0
+            ? $"=== Classification Report — {label} ({total} samples) ==="
+            : $"=== Classification Report ({total} samples) ===";
+        Console.WriteLine($"\n{heading}");
         Console.WriteLine($"  {"Class",-35} {"Prec",6}  {"Rec",6}  {"F1",6}  {"Support",8}");
         Console.WriteLine($"  {new string('─', 67)}");
 
@@ -87,7 +90,10 @@ public sealed class ClassificationReport
         double bR  = _bTP + _bFN > 0 ? (double)_bTP / (_bTP + _bFN) : 0;
         double bF1 = bP + bR > 0 ? 2 * bP * bR / (bP + bR) : 0;
 
-        Console.WriteLine($"\n=== Binary: Propaganda Detection ===");
+        string binHeading = label.Length > 0
+            ? $"=== Binary: Propaganda Detection — {label} ==="
+            : "=== Binary: Propaganda Detection ===";
+        Console.WriteLine($"\n{binHeading}");
         Console.WriteLine($"               | Predicted Prop | Predicted Not |");
         Console.WriteLine($"  {new string('─', 47)}");
         Console.WriteLine($"  Actual Prop  |   {_bTP,6} (TP)   |  {_bFN,6} (FN)  |");

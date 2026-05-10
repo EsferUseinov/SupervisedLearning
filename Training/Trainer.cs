@@ -18,63 +18,39 @@ public class Trainer
 
     public TrainingResult Train(Network network, DataSet dataset)
     {
-        dataset.Shuffle(_config.Seed);
-        var batches = dataset.CreateBatches(_config.BatchSize);
         var epochResults = new List<EpochResult>();
-        var lossCurve = new List<double>();
-
-        network.SetTrainingMode(true);
         var totalTimer = Stopwatch.StartNew();
-        double currentLr = _config.LearningRate;
 
         for (int epoch = 0; epoch < _config.Epochs; epoch++)
         {
-            foreach (int step in _config.LrDecaySteps)
-                if (epoch == step)
-                    currentLr *= _config.LrDecayFactor;
+            dataset.Shuffle(_config.Seed + epoch);
+            var batches = dataset.CreateBatches(_config.BatchSize);
 
             double epochLoss = 0.0;
-            long epochForwardMs = 0;
-            long epochBackwardMs = 0;
-            int samplesProcessed = 0;
             var epochTimer = Stopwatch.StartNew();
 
             foreach (var batch in batches)
             {
-                var batchResult = _strategy.RunEpoch(network, batch, currentLr);
+                var batchResult = _strategy.RunEpoch(network, batch, _config.LearningRate);
                 epochLoss += batchResult.Loss;
-                epochForwardMs += batchResult.ForwardTimeMs;
-                epochBackwardMs += batchResult.BackwardTimeMs;
-                samplesProcessed += batchResult.SamplesProcessed;
             }
 
             epochTimer.Stop();
 
-            var epochResult = new EpochResult
+            epochResults.Add(new EpochResult
             {
                 Loss = epochLoss / batches.Length,
-                ForwardTimeMs = epochForwardMs,
-                BackwardTimeMs = epochBackwardMs,
-                SyncTimeMs = 0,
-                EpochDurationMs = epochTimer.ElapsedMilliseconds,
-                SamplesProcessed = samplesProcessed,
-                LearningRate = currentLr
-            };
-
-            epochResults.Add(epochResult);
-            lossCurve.Add(epochResult.Loss);
+                EpochDurationMs = epochTimer.ElapsedMilliseconds
+            });
         }
 
         totalTimer.Stop();
-        network.SetTrainingMode(false);
 
         return new TrainingResult
         {
             EpochResults = epochResults.ToArray(),
             TotalDurationMs = totalTimer.ElapsedMilliseconds,
-            FinalLoss = epochResults[^1].Loss,
-            StrategyName = _strategy.Name,
-            LossCurve = lossCurve.ToArray()
+            FinalLoss = epochResults[^1].Loss
         };
     }
 }

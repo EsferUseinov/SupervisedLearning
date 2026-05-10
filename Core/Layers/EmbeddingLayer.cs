@@ -30,7 +30,7 @@ public class EmbeddingLayer : ILayer
 
         var rng = new Random(seed);
         double scale = 1.0 / Math.Sqrt(embeddingDim);
-        for (int i = 0; i < _table.Length; i++)
+        for (int i = embeddingDim; i < _table.Length; i++)
         {
             double u1 = 1.0 - rng.NextDouble();
             double u2 = 1.0 - rng.NextDouble();
@@ -59,6 +59,7 @@ public class EmbeddingLayer : ILayer
         for (int pos = 0; pos < _seqLen; pos++)
         {
             int idx = _lastTokens[pos];
+            if (idx == 0) continue;
             int tableBase = idx * _embeddingDim;
             int gradBase = pos * _embeddingDim;
             for (int d = 0; d < _embeddingDim; d++)

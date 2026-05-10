@@ -11,21 +11,14 @@ public class DenseLayer : ILayer
     private double[] _lastZ = Array.Empty<double>();
     private readonly GradientPacket _gradients;
 
-    private readonly double _dropoutRate;
-    private double[]? _dropoutMask;
-    private readonly Random _rng = new Random();
-
-    public bool IsTraining { get; set; }
-
     public int InputSize { get; }
     public int OutputSize { get; }
 
-    public DenseLayer(int inputSize, int outputSize, IActivation activation, int seed = 0, double dropoutRate = 0.0)
+    public DenseLayer(int inputSize, int outputSize, IActivation activation, int seed = 0)
     {
         InputSize = inputSize;
         OutputSize = outputSize;
         _activation = activation;
-        _dropoutRate = dropoutRate;
         _weights = new double[outputSize, inputSize];
         _bias = new double[outputSize];
         _gradients = new GradientPacket(outputSize * inputSize, outputSize);
@@ -56,32 +49,14 @@ public class DenseLayer : ILayer
             _lastZ[i] = z;
         }
 
-        var output = _activation.ComputeVector(_lastZ);
-
-        if (IsTraining && _dropoutRate > 0.0)
-        {
-            _dropoutMask ??= new double[OutputSize];
-            double keepProb = 1.0 - _dropoutRate;
-            for (int i = 0; i < OutputSize; i++)
-            {
-                _dropoutMask[i] = _rng.NextDouble() < keepProb ? 1.0 / keepProb : 0.0;
-                output[i] *= _dropoutMask[i];
-            }
-        }
-
-        return output;
+        return _activation.ComputeVector(_lastZ);
     }
 
     public double[] Backward(double[] gradientFromNext)
     {
         var dz = new double[OutputSize];
         for (int i = 0; i < OutputSize; i++)
-        {
-            double g = gradientFromNext[i];
-            if (IsTraining && _dropoutRate > 0.0 && _dropoutMask != null)
-                g *= _dropoutMask[i];
-            dz[i] = g * _activation.Derivative(_lastZ[i]);
-        }
+            dz[i] = gradientFromNext[i] * _activation.Derivative(_lastZ[i]);
 
         for (int i = 0; i < OutputSize; i++)
         {
@@ -142,7 +117,7 @@ public class DenseLayer : ILayer
 
     public ILayer Clone()
     {
-        var clone = new DenseLayer(InputSize, OutputSize, _activation, dropoutRate: _dropoutRate);
+        var clone = new DenseLayer(InputSize, OutputSize, _activation);
         Array.Copy(_weights, clone._weights, _weights.Length);
         Array.Copy(_bias, clone._bias, _bias.Length);
         return clone;

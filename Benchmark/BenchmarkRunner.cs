@@ -8,23 +8,23 @@ using SupervisedLearning.Training.Strategies;
 
 public class BenchmarkRunner
 {
-    private const int WarmupRuns = 1;
+    private const int WarmupRuns  = 1;
     private const int MeasuredRuns = 3;
 
     private readonly ILossFunction _lossFunction;
-    private readonly IOptimizer _optimizer;
+    private readonly IOptimizer    _optimizer;
 
     public BenchmarkRunner(ILossFunction lossFunction, IOptimizer optimizer)
     {
         _lossFunction = lossFunction;
-        _optimizer = optimizer;
+        _optimizer    = optimizer;
     }
 
     public BenchmarkReport ScalabilitySweep(
-        Network network,
-        DataSet dataset,
+        Network     network,
+        DataSet     dataset,
         TrainingConfig config,
-        int[] threadCounts)
+        int[]       threadCounts)
     {
         var seqStrategy = new SequentialStrategy(_lossFunction, _optimizer);
 
@@ -34,7 +34,6 @@ public class BenchmarkRunner
         long seqTotal = 0;
         for (int r = 0; r < MeasuredRuns; r++)
             seqTotal += new Trainer(seqStrategy, config).Train(network.Clone(), dataset).TotalDurationMs;
-
         long seqAvg = seqTotal / MeasuredRuns;
 
         var entries = new ScalabilityEntry[threadCounts.Length];
@@ -42,23 +41,37 @@ public class BenchmarkRunner
         for (int i = 0; i < threadCounts.Length; i++)
         {
             int t = threadCounts[i];
-            var parStrategy = new DataParallelStrategy(_lossFunction, _optimizer, t);
+            var threadStrategy = new DataParallelStrategy(_lossFunction, _optimizer, t, useThreadPool: false);
+            var poolStrategy   = new DataParallelStrategy(_lossFunction, _optimizer, t, useThreadPool: true);
 
             for (int w = 0; w < WarmupRuns; w++)
-                new Trainer(parStrategy, config).Train(network.Clone(), dataset);
+            {
+                new Trainer(threadStrategy, config).Train(network.Clone(), dataset);
+                new Trainer(poolStrategy,   config).Train(network.Clone(), dataset);
+            }
 
-            long parTotal = 0;
+            long threadTotal = 0, poolTotal = 0;
             for (int r = 0; r < MeasuredRuns; r++)
-                parTotal += new Trainer(parStrategy, config).Train(network.Clone(), dataset).TotalDurationMs;
+            {
+                threadTotal += new Trainer(threadStrategy, config).Train(network.Clone(), dataset).TotalDurationMs;
+                poolTotal   += new Trainer(poolStrategy,   config).Train(network.Clone(), dataset).TotalDurationMs;
+            }
 
-            long parAvg = parTotal / MeasuredRuns;
-            double speedup = seqAvg / (double)Math.Max(parAvg, 1);
+            long threadAvg = threadTotal / MeasuredRuns;
+            long poolAvg   = poolTotal   / MeasuredRuns;
+            double threadSpeedup = seqAvg / (double)Math.Max(threadAvg, 1);
+            double poolSpeedup   = seqAvg / (double)Math.Max(poolAvg,   1);
 
             entries[i] = new ScalabilityEntry
             {
-                ThreadCount = t,
-                Speedup = speedup,
-                Efficiency = speedup / t
+                ThreadCount      = t,
+                SeqTimeMs        = seqAvg,
+                ThreadTimeMs     = threadAvg,
+                ThreadSpeedup    = threadSpeedup,
+                ThreadEfficiency = threadSpeedup / t,
+                PoolTimeMs       = poolAvg,
+                PoolSpeedup      = poolSpeedup,
+                PoolEfficiency   = poolSpeedup / t,
             };
         }
 
@@ -66,46 +79,53 @@ public class BenchmarkRunner
     }
 
     public BenchmarkReport DataSizeSweep(
-        Network network,
-        DataSet fullDataset,
+        Network        network,
+        DataSet        fullDataset,
         TrainingConfig config,
-        int[] sampleCounts,
-        int parallelThreads)
+        int[]          sampleCounts,
+        int            parallelThreads)
     {
-        var seqStrategy = new SequentialStrategy(_lossFunction, _optimizer);
-        var parStrategy = new DataParallelStrategy(_lossFunction, _optimizer, parallelThreads);
-        var entries = new DataSizeEntry[sampleCounts.Length];
+        var seqStrategy    = new SequentialStrategy(_lossFunction, _optimizer);
+        var threadStrategy = new DataParallelStrategy(_lossFunction, _optimizer, parallelThreads, useThreadPool: false);
+        var poolStrategy   = new DataParallelStrategy(_lossFunction, _optimizer, parallelThreads, useThreadPool: true);
+        var entries        = new DataSizeEntry[sampleCounts.Length];
 
         for (int i = 0; i < sampleCounts.Length; i++)
         {
-            int n = Math.Min(sampleCounts[i], fullDataset.Samples.Length);
+            int n      = Math.Min(sampleCounts[i], fullDataset.Samples.Length);
             var subset = new DataSet(fullDataset.Samples[..n]);
 
             for (int w = 0; w < WarmupRuns; w++)
             {
-                new Trainer(seqStrategy, config).Train(network.Clone(), subset);
-                new Trainer(parStrategy, config).Train(network.Clone(), subset);
+                new Trainer(seqStrategy,    config).Train(network.Clone(), subset);
+                new Trainer(threadStrategy, config).Train(network.Clone(), subset);
+                new Trainer(poolStrategy,   config).Train(network.Clone(), subset);
             }
 
-            long seqTotal = 0;
-            long parTotal = 0;
+            long seqTotal = 0, threadTotal = 0, poolTotal = 0;
             for (int r = 0; r < MeasuredRuns; r++)
             {
-                seqTotal += new Trainer(seqStrategy, config).Train(network.Clone(), subset).TotalDurationMs;
-                parTotal += new Trainer(parStrategy, config).Train(network.Clone(), subset).TotalDurationMs;
+                seqTotal    += new Trainer(seqStrategy,    config).Train(network.Clone(), subset).TotalDurationMs;
+                threadTotal += new Trainer(threadStrategy, config).Train(network.Clone(), subset).TotalDurationMs;
+                poolTotal   += new Trainer(poolStrategy,   config).Train(network.Clone(), subset).TotalDurationMs;
             }
 
-            long seqAvg = seqTotal / MeasuredRuns;
-            long parAvg = parTotal / MeasuredRuns;
-            double speedup = seqAvg / (double)Math.Max(parAvg, 1);
+            long seqAvg    = seqTotal    / MeasuredRuns;
+            long threadAvg = threadTotal / MeasuredRuns;
+            long poolAvg   = poolTotal   / MeasuredRuns;
+            double threadSpeedup = seqAvg / (double)Math.Max(threadAvg, 1);
+            double poolSpeedup   = seqAvg / (double)Math.Max(poolAvg,   1);
 
             entries[i] = new DataSizeEntry
             {
-                SampleCount = n,
-                SeqTimeMs = seqAvg,
-                ParTimeMs = parAvg,
-                Speedup = speedup,
-                Efficiency = speedup / parallelThreads
+                SampleCount      = n,
+                SeqTimeMs        = seqAvg,
+                ThreadTimeMs     = threadAvg,
+                ThreadSpeedup    = threadSpeedup,
+                ThreadEfficiency = threadSpeedup / parallelThreads,
+                PoolTimeMs       = poolAvg,
+                PoolSpeedup      = poolSpeedup,
+                PoolEfficiency   = poolSpeedup / parallelThreads,
             };
         }
 
