@@ -32,4 +32,16 @@ public class GradientPacket
         Array.Clear(WeightGradients);
         Array.Clear(BiasGradients);
     }
+
+    public void AccumulateRange(GradientPacket other, int fromWeight, int toWeight)
+    {
+        for (int i = fromWeight; i < toWeight; i++)
+            WeightGradients[i] += other.WeightGradients[i];
+    }
+
+    public void ScaleRange(double factor, int fromWeight, int toWeight)
+    {
+        for (int i = fromWeight; i < toWeight; i++)
+            WeightGradients[i] *= factor;
+    }
 }

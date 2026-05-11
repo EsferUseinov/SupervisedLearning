@@ -6,7 +6,6 @@ using SupervisedLearning.Core.Activations;
 using SupervisedLearning.Core.Layers;
 using SupervisedLearning.Core.Loss;
 using SupervisedLearning.Data;
-using SupervisedLearning.Data.Preprocessing;
 using SupervisedLearning.Training;
 using SupervisedLearning.Training.Optimizers;
 using SupervisedLearning.Training.Strategies;
@@ -15,7 +14,7 @@ using SupervisedLearning.Inference;
 using SupervisedLearning.Verification;
 
 // ── Paths ─────────────────────────────────────────────────────────────────
-const string ArticlesDir  = "datasets/train-articles";
+const string ArticlesDir         = "datasets/train-articles";
 const string LabelsPath          = "datasets/train-task2-TC.labels";
 const string SyntheticLabelsPath = "datasets/synthetic-task2-TC.labels";
 const string SeqCachePath        = "seq_cache.txt";
@@ -32,7 +31,7 @@ int          NumClasses      = SemEvalLoader.NumClasses;
 const int    OutputLen       = SeqLen - FilterSize + 1;
 
 // ── Hyperparameters ───────────────────────────────────────────────────────
-const int    TrainEpochs     = 300;
+const int    TrainEpochs     = 10;
 const int    BenchEpochs     = 2;
 const int    BatchSize       = 256;
 const double LearningRate    = 0.04;
@@ -176,6 +175,8 @@ void RunWarmup(string label, bool forwardOnly)
             Epochs = WarmupEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 0
         };
         new Trainer(new SequentialStrategy(loss, sgd), warmupCfg).Train(warmupNet, warmupData);
+        new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads, useThreadPool: false), warmupCfg).Train(warmupNet.Clone(), warmupData);
+        new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads, useThreadPool: true),  warmupCfg).Train(warmupNet.Clone(), warmupData);
     }
     sw.Stop();
     Console.WriteLine($"done ({sw.ElapsedMilliseconds} ms)");
@@ -344,7 +345,7 @@ if (RunScalability)
 // ── 7. Dataset size sweep ─────────────────────────────────────────────────
 if (RunDataSizeSweep)
 {
-    int[] dataSizes = { 500, 1000, 2000, 4000, Math.Min(6000, trainSet.Samples.Length) };
+    int[] dataSizes = { 500, 1000, 2000, 3000, 4000, 5000, Math.Min(6000, trainSet.Samples.Length) };
     dataSizes = dataSizes.Distinct().OrderBy(x => x).ToArray();
     Console.WriteLine($"\n=== Scalability: Dataset Size ({ParallelThreads} threads, {BenchEpochs} epochs) ===");
     var benchCfg2 = new TrainingConfig
