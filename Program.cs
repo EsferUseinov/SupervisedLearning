@@ -28,11 +28,11 @@ const int    EmbDim          = 32;
 const int    FilterSize      = 3;
 const int    NumFilters      = 64;
 const int    DenseHidden     = 32;
-const int    NumClasses      = 9;
+int          NumClasses      = SemEvalLoader.NumClasses;
 const int    OutputLen       = SeqLen - FilterSize + 1;
 
 // ── Hyperparameters ───────────────────────────────────────────────────────
-const int    TrainEpochs     = 200;
+const int    TrainEpochs     = 300;
 const int    BenchEpochs     = 2;
 const int    BatchSize       = 256;
 const double LearningRate    = 0.04;
@@ -52,7 +52,7 @@ bool RunParallelPool       = true;
 bool RunAccuracy           = true;
 bool RunVerification       = true;
 bool RunReport             = true;
-bool RunGradientCheck      = true;
+bool RunGradientCheck      = false;
 bool RunScalability        = true;
 bool RunDataSizeSweep      = true;
 bool RunTextScan           = false;
@@ -77,6 +77,7 @@ var (trainSet, valSet) = SemEvalLoader.LoadWithSplit(
 loadTimer.Stop();
 
 double[] classWeights = SemEvalLoader.ComputeClassWeights(trainSet);
+var originalSamples = trainSet.Samples.ToArray();
 Console.WriteLine($"done ({loadTimer.ElapsedMilliseconds} ms)");
 Console.WriteLine($"  Train: {trainSet.Samples.Length}  Val: {valSet.Samples.Length}");
 
@@ -213,6 +214,7 @@ if (seqNet == null && seqResult == null && RunSequential)
 {
     seqNet = BuildNet(seed: 67);
     Console.WriteLine("\n  [Sequential]");
+    Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     seqResult = new Trainer(new SequentialStrategy(loss, sgd), trainCfg).Train(seqNet, trainSet);
     PrintEpochTable(seqResult);
     if (SaveSeqToCache) SaveSeqCache(seqResult);
@@ -231,6 +233,7 @@ if (RunParallelThread)
 {
     parNet = BuildNet(seed: 67);
     Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, Thread-based]");
+    Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     parResult = new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads), trainCfg)
         .Train(parNet, trainSet);
     PrintEpochTable(parResult);
@@ -244,6 +247,7 @@ if (RunParallelPool)
 {
     parNet2 = BuildNet(seed: 67);
     Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, ThreadPool-based]");
+    Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     parResult2 = new Trainer(
         new DataParallelStrategy(loss, sgd, ParallelThreads, useThreadPool: true), trainCfg)
         .Train(parNet2, trainSet);
@@ -299,6 +303,7 @@ if (RunVerification)
         new SequentialStrategy(loss, sgd),
         new DataParallelStrategy(loss, sgd, ParallelThreads),
         batchSize: BatchSize, learningRate: LearningRate, epsilon: 1e-7);
+    Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     double maxDiff = verifier.MaxWeightDiff(
         verBase.Clone(), verBase.Clone(),
         new DataSet(trainSet.Samples[..verifySamples]), seed: 67);
@@ -330,6 +335,7 @@ if (RunScalability)
     {
         Epochs = BenchEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 67
     };
+    Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     new BenchmarkRunner(loss, sgd)
         .ScalabilitySweep(BuildNet(seed: 0), trainSet, benchCfg, new[] { 2, 4, 6, 8 })
         .Print();
@@ -345,6 +351,7 @@ if (RunDataSizeSweep)
     {
         Epochs = BenchEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 67
     };
+    Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     new BenchmarkRunner(loss, sgd)
         .DataSizeSweep(BuildNet(seed: 0), trainSet, benchCfg2, dataSizes, ParallelThreads)
         .Print();

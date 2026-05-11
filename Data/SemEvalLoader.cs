@@ -12,14 +12,12 @@ public static class SemEvalLoader
         "Repetition",
         "Doubt",
         "Exaggeration,Minimisation",
-        "Appeal_to_fear-prejudice",
         "Flag-Waving",
-        "Causal_Oversimplification",
         "Other"
     };
 
     private static readonly HashSet<string> ValidTechniqueSet =
-        new HashSet<string>(Techniques[..8], StringComparer.Ordinal);
+        new HashSet<string>(Techniques[..6], StringComparer.Ordinal);
 
     public static int NumClasses => Techniques.Length;
 
