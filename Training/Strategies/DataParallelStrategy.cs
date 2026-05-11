@@ -15,6 +15,7 @@ public class DataParallelStrategy : ITrainingStrategy
     private Network[]? _networkClones;
     private GradientPacket[]? _accumulated;
     private double[]? _threadLosses;
+    private ArraySegment<DataSample>[]? _chunks;
 
     private const int ParallelReduceThreshold = 10_000;
 
@@ -36,6 +37,7 @@ public class DataParallelStrategy : ITrainingStrategy
         _networkClones = new Network[_threadCount];
         _accumulated = new GradientPacket[layerCount];
         _threadLosses = new double[_threadCount];
+        _chunks = new ArraySegment<DataSample>[_threadCount];
 
         for (int t = 0; t < _threadCount; t++)
             _networkClones[t] = network.Clone();
@@ -54,18 +56,21 @@ public class DataParallelStrategy : ITrainingStrategy
     {
         EnsureInitialized(network);
 
-        int layerCount = network.Layers.Count;
-        DataSample[][] chunks = SplitIntoChunks(batch, _threadCount);
-        int actualThreads = chunks.Length;
-
-        ParallelSetup(network, actualThreads);
+        int layerCount    = network.Layers.Count;
+        int actualThreads = FillChunks(batch);
 
         if (_useThreadPool)
-            RunWithThreadPool(_networkClones!, chunks, _threadLosses!, actualThreads);
+        {
+            SyncWeightsWithThreadPool(network, actualThreads);
+            RunWithThreadPool(_networkClones!, _chunks!, _threadLosses!, actualThreads);
+        }
         else
-            RunWithThreads(_networkClones!, chunks, _threadLosses!, actualThreads);
+        {
+            SyncWeightsWithThreads(network, actualThreads);
+            RunWithThreads(_networkClones!, _chunks!, _threadLosses!, actualThreads);
+        }
 
-        ParallelReduce(network, actualThreads, layerCount, batch.Length, learningRate);
+        ReduceAndUpdate(network, actualThreads, layerCount, batch.Length, learningRate);
 
         double totalLoss = 0.0;
         for (int t = 0; t < actualThreads; t++) totalLoss += _threadLosses![t];
@@ -73,7 +78,36 @@ public class DataParallelStrategy : ITrainingStrategy
         return totalLoss / batch.Length;
     }
 
-    private void ParallelSetup(Network network, int actualThreads)
+    private int FillChunks(DataSample[] batch)
+    {
+        int actualCount = Math.Min(_threadCount, batch.Length);
+        int baseSize    = batch.Length / actualCount;
+        int remainder   = batch.Length % actualCount;
+        int offset      = 0;
+
+        for (int i = 0; i < actualCount; i++)
+        {
+            int size    = baseSize + (i < remainder ? 1 : 0);
+            _chunks![i] = new ArraySegment<DataSample>(batch, offset, size);
+            offset     += size;
+        }
+
+        return actualCount;
+    }
+
+    private void SyncWeightsWithThreads(Network network, int actualThreads)
+    {
+        var threads = new Thread[actualThreads];
+        for (int t = 0; t < actualThreads; t++)
+        {
+            int idx = t;
+            threads[t] = new Thread(() => SyncWeights(network, _networkClones![idx]));
+            threads[t].Start();
+        }
+        foreach (var th in threads) th.Join();
+    }
+
+    private void SyncWeightsWithThreadPool(Network network, int actualThreads)
     {
         using var done = new CountdownEvent(actualThreads);
         for (int t = 0; t < actualThreads; t++)
@@ -88,39 +122,59 @@ public class DataParallelStrategy : ITrainingStrategy
         done.Wait();
     }
 
-    private void ParallelReduce(Network network, int actualThreads, int layerCount, int batchSize, double learningRate)
+    private void RunWithThreads(
+        Network[] networkClones,
+        ArraySegment<DataSample>[] chunks,
+        double[] threadLosses,
+        int actualThreads)
+    {
+        var threads = new Thread[actualThreads];
+        for (int t = 0; t < actualThreads; t++)
+        {
+            int idx = t;
+            threads[t] = new Thread(() =>
+                ProcessChunk(networkClones[idx], chunks[idx], threadLosses, idx));
+            threads[t].Start();
+        }
+        foreach (var thread in threads) thread.Join();
+    }
+
+    private void RunWithThreadPool(
+        Network[] networkClones,
+        ArraySegment<DataSample>[] chunks,
+        double[] threadLosses,
+        int actualThreads)
+    {
+        using var countdown = new CountdownEvent(actualThreads);
+        for (int t = 0; t < actualThreads; t++)
+        {
+            int idx = t;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                ProcessChunk(networkClones[idx], chunks[idx], threadLosses, idx);
+                countdown.Signal();
+            });
+        }
+        countdown.Wait();
+    }
+
+    private void ReduceAndUpdate(Network network, int actualThreads, int layerCount, int batchSize, double learningRate)
     {
         double invBatch = 1.0 / batchSize;
 
         for (int l = 0; l < layerCount; l++)
         {
-            var acc = _accumulated![l];
+            var acc    = _accumulated![l];
             int wCount = acc.WeightGradients.Length;
 
             if (wCount >= ParallelReduceThreshold)
             {
                 int rangeSize = (wCount + _threadCount - 1) / _threadCount;
-                using var done = new CountdownEvent(_threadCount);
 
-                for (int r = 0; r < _threadCount; r++)
-                {
-                    int from = r * rangeSize;
-                    if (from >= wCount) { done.Signal(); continue; }
-                    int to = Math.Min(from + rangeSize, wCount);
-                    int li = l;
-                    int rf = from, rt = to;
-
-                    ThreadPool.QueueUserWorkItem(_ =>
-                    {
-                        Array.Clear(acc.WeightGradients, rf, rt - rf);
-                        for (int ti = 0; ti < actualThreads; ti++)
-                            acc.AccumulateRange(_networkClones![ti].Layers[li].GetGradients(), rf, rt);
-                        acc.ScaleRange(invBatch, rf, rt);
-                        done.Signal();
-                    });
-                }
-
-                done.Wait();
+                if (_useThreadPool)
+                    ReduceWeightsWithThreadPool(acc, actualThreads, l, wCount, rangeSize, invBatch);
+                else
+                    ReduceWeightsWithThreads(acc, actualThreads, l, wCount, rangeSize, invBatch);
 
                 int bCount = acc.BiasGradients.Length;
                 if (bCount > 0)
@@ -148,45 +202,59 @@ public class DataParallelStrategy : ITrainingStrategy
         }
     }
 
-    private void RunWithThreads(
-        Network[] networkClones,
-        DataSample[][] chunks,
-        double[] threadLosses,
-        int actualThreads)
+    private void ReduceWeightsWithThreads(
+        GradientPacket acc, int actualThreads, int layerIdx,
+        int wCount, int rangeSize, double invBatch)
     {
-        var threads = new Thread[actualThreads];
-        for (int t = 0; t < actualThreads; t++)
+        int rangeCount = (wCount + rangeSize - 1) / rangeSize;
+        var threads    = new Thread[rangeCount];
+
+        for (int r = 0; r < rangeCount; r++)
         {
-            int idx = t;
-            threads[t] = new Thread(() =>
-                ProcessChunk(networkClones[idx], chunks[idx], threadLosses, idx));
-            threads[t].Start();
+            int rf = r * rangeSize;
+            int rt = Math.Min(rf + rangeSize, wCount);
+
+            threads[r] = new Thread(() =>
+            {
+                Array.Clear(acc.WeightGradients, rf, rt - rf);
+                for (int ti = 0; ti < actualThreads; ti++)
+                    acc.AccumulateRange(_networkClones![ti].Layers[layerIdx].GetGradients(), rf, rt);
+                acc.ScaleRange(invBatch, rf, rt);
+            });
+            threads[r].Start();
         }
-        foreach (var thread in threads) thread.Join();
+
+        foreach (var th in threads) th.Join();
     }
 
-    private void RunWithThreadPool(
-        Network[] networkClones,
-        DataSample[][] chunks,
-        double[] threadLosses,
-        int actualThreads)
+    private void ReduceWeightsWithThreadPool(
+        GradientPacket acc, int actualThreads, int layerIdx,
+        int wCount, int rangeSize, double invBatch)
     {
-        using var countdown = new CountdownEvent(actualThreads);
-        for (int t = 0; t < actualThreads; t++)
+        using var done = new CountdownEvent(_threadCount);
+
+        for (int r = 0; r < _threadCount; r++)
         {
-            int idx = t;
+            int rf = r * rangeSize;
+            if (rf >= wCount) { done.Signal(); continue; }
+            int rt = Math.Min(rf + rangeSize, wCount);
+
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                ProcessChunk(networkClones[idx], chunks[idx], threadLosses, idx);
-                countdown.Signal();
+                Array.Clear(acc.WeightGradients, rf, rt - rf);
+                for (int ti = 0; ti < actualThreads; ti++)
+                    acc.AccumulateRange(_networkClones![ti].Layers[layerIdx].GetGradients(), rf, rt);
+                acc.ScaleRange(invBatch, rf, rt);
+                done.Signal();
             });
         }
-        countdown.Wait();
+
+        done.Wait();
     }
 
     private void ProcessChunk(
         Network networkClone,
-        DataSample[] chunk,
+        ArraySegment<DataSample> chunk,
         double[] threadLosses,
         int threadIdx)
     {
@@ -204,23 +272,5 @@ public class DataParallelStrategy : ITrainingStrategy
         }
 
         threadLosses[threadIdx] = totalLoss;
-    }
-
-    private static DataSample[][] SplitIntoChunks(DataSample[] batch, int count)
-    {
-        int actualCount = Math.Min(count, batch.Length);
-        var chunks = new DataSample[actualCount][];
-        int baseSize = batch.Length / actualCount;
-        int remainder = batch.Length % actualCount;
-
-        int offset = 0;
-        for (int i = 0; i < actualCount; i++)
-        {
-            int size = baseSize + (i < remainder ? 1 : 0);
-            chunks[i] = new DataSample[size];
-            Array.Copy(batch, offset, chunks[i], 0, size);
-            offset += size;
-        }
-        return chunks;
     }
 }

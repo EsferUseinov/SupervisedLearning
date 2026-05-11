@@ -31,7 +31,7 @@ int          NumClasses      = SemEvalLoader.NumClasses;
 const int    OutputLen       = SeqLen - FilterSize + 1;
 
 // ── Hyperparameters ───────────────────────────────────────────────────────
-const int    TrainEpochs     = 10;
+const int    TrainEpochs     = 200;
 const int    BenchEpochs     = 2;
 const int    BatchSize       = 256;
 const double LearningRate    = 0.04;
@@ -52,6 +52,7 @@ bool RunAccuracy           = true;
 bool RunVerification       = true;
 bool RunReport             = true;
 bool RunGradientCheck      = false;
+bool PrintEpochProgress    = true;
 bool RunScalability        = true;
 bool RunDataSizeSweep      = true;
 bool RunTextScan           = false;
@@ -208,7 +209,7 @@ if (seqNet == null && LoadSeqFromCache)
 {
     Console.WriteLine("\n  [Sequential — loaded from cache]");
     seqResult = LoadSeqCache();
-    if (seqResult != null) PrintEpochTable(seqResult);
+    if (seqResult != null && PrintEpochProgress) PrintEpochTable(seqResult);
 }
 
 if (seqNet == null && seqResult == null && RunSequential)
@@ -217,7 +218,7 @@ if (seqNet == null && seqResult == null && RunSequential)
     Console.WriteLine("\n  [Sequential]");
     Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     seqResult = new Trainer(new SequentialStrategy(loss, sgd), trainCfg).Train(seqNet, trainSet);
-    PrintEpochTable(seqResult);
+    if (PrintEpochProgress) PrintEpochTable(seqResult);
     if (SaveSeqToCache) SaveSeqCache(seqResult);
     if (SaveModelWeights)
     {
@@ -237,7 +238,7 @@ if (RunParallelThread)
     Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     parResult = new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads), trainCfg)
         .Train(parNet, trainSet);
-    PrintEpochTable(parResult);
+    if (PrintEpochProgress) PrintEpochTable(parResult);
 }
 
 // ── 3. Parallel — ThreadPool ──────────────────────────────────────────────
@@ -252,7 +253,7 @@ if (RunParallelPool)
     parResult2 = new Trainer(
         new DataParallelStrategy(loss, sgd, ParallelThreads, useThreadPool: true), trainCfg)
         .Train(parNet2, trainSet);
-    PrintEpochTable(parResult2);
+    if (PrintEpochProgress) PrintEpochTable(parResult2);
 }
 
 // ── Comparison table ──────────────────────────────────────────────────────
