@@ -19,6 +19,7 @@ const string LabelsPath          = "datasets/train-task2-TC.labels";
 const string SyntheticLabelsPath = "datasets/synthetic-task2-TC.labels";
 const string SeqCachePath        = "seq_cache.txt";
 const string ModelPath           = "model.bin";
+const string VocabPath           = "vocab.bin";
 
 // ── Architecture ──────────────────────────────────────────────────────────
 const int    VocabSize       = 5000;
@@ -31,7 +32,7 @@ int          NumClasses      = SemEvalLoader.NumClasses;
 const int    OutputLen       = SeqLen - FilterSize + 1;
 
 // ── Hyperparameters ───────────────────────────────────────────────────────
-const int    TrainEpochs     = 200;
+const int    TrainEpochs     = 2;
 const int    BenchEpochs     = 2;
 const int    BatchSize       = 256;
 const double LearningRate    = 0.04;
@@ -224,6 +225,8 @@ if (seqNet == null && seqResult == null && RunSequential)
     {
         NetworkSerializer.Save(seqNet, ModelPath);
         Console.WriteLine($"  Model weights saved → {ModelPath}");
+        VocabularySerializer.Save(vocab, VocabPath);
+        Console.WriteLine($"  Vocabulary saved    → {VocabPath}");
     }
 }
 

@@ -21,6 +21,16 @@ public class Vocabulary
     public int GetIndex(string word) =>
         _wordToIdx.TryGetValue(word, out int idx) ? idx : UnkIndex;
 
+    public string GetWord(int i) => _idxToWord[i];
+
+    public static Vocabulary FromWordList(string[] words)
+    {
+        var wordToIdx = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i < words.Length; i++)
+            wordToIdx[words[i]] = i;
+        return new Vocabulary(wordToIdx, words);
+    }
+
     public static Vocabulary Build(IEnumerable<string> texts, int maxVocabSize = 5000)
     {
         var freq = new Dictionary<string, int>(StringComparer.Ordinal);
