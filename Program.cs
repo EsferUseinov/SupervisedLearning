@@ -32,7 +32,7 @@ int          NumClasses      = SemEvalLoader.NumClasses;
 const int    OutputLen       = SeqLen - FilterSize + 1;
 
 // ── Hyperparameters ───────────────────────────────────────────────────────
-const int    TrainEpochs     = 2;
+const int    TrainEpochs     = 5;
 const int    BenchEpochs     = 2;
 const int    BatchSize       = 256;
 const double LearningRate    = 0.04;
