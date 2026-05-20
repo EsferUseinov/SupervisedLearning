@@ -341,6 +341,8 @@ if (RunScalability)
         Epochs = BenchEpochs, BatchSize = BatchSize, LearningRate = LearningRate, Seed = 67
     };
     Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
+    ThreadPool.GetMinThreads(out int _, out int minIo);
+    ThreadPool.SetMinThreads(2, minIo);
     new BenchmarkRunner(loss, sgd)
         .ScalabilitySweep(BuildNet(seed: 0), trainSet, benchCfg, new[] { 2, 4, 6, 8 })
         .Print();

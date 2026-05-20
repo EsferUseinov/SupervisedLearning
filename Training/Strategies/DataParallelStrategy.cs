@@ -37,6 +37,15 @@ public class DataParallelStrategy : ITrainingStrategy
         _optimizer = optimizer;
         _threadCount = threadCount;
         _useThreadPool = useThreadPool;
+
+        if (_useThreadPool)
+        {
+            ThreadPool.GetMaxThreads(out int _, out int maxIo);
+            ThreadPool.SetMaxThreads(_threadCount, maxIo);
+            ThreadPool.GetMinThreads(out int _, out int minIo);
+            ThreadPool.SetMinThreads(_threadCount, minIo);
+            _poolCountdown = new CountdownEvent(_threadCount);
+        }
     }
 
     private void EnsureInitialized(Network network)
@@ -56,13 +65,7 @@ public class DataParallelStrategy : ITrainingStrategy
         for (int l = 0; l < layerCount; l++)
             _accumulated[l] = network.Layers[l].CreateEmptyGradients();
 
-        if (_useThreadPool)
-        {
-            ThreadPool.GetMaxThreads(out int _, out int maxIo);
-            ThreadPool.SetMaxThreads(_threadCount, maxIo);
-            _poolCountdown = new CountdownEvent(_threadCount);
-        }
-        else
+        if (!_useThreadPool)
         {
             InitPersistentThreads();
         }
