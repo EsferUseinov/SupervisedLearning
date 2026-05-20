@@ -230,28 +230,28 @@ if (seqNet == null && seqResult == null && RunSequential)
     }
 }
 
-// ── 2. Parallel — Thread ──────────────────────────────────────────────────
+// ── 2. Parallel – Thread ──────────────────────────────────────────────────
 TrainingResult? parResult  = null;
 Network?        parNet     = null;
 
 if (RunParallelThread)
 {
     parNet = BuildNet(seed: 67);
-    Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, Thread-based]");
+    Console.WriteLine($"\n  [Parallel – {ParallelThreads} threads, Thread-based]");
     Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     parResult = new Trainer(new DataParallelStrategy(loss, sgd, ParallelThreads), trainCfg)
         .Train(parNet, trainSet);
     if (PrintEpochProgress) PrintEpochTable(parResult);
 }
 
-// ── 3. Parallel — ThreadPool ──────────────────────────────────────────────
+// ── 3. Parallel – ThreadPool ──────────────────────────────────────────────
 TrainingResult? parResult2 = null;
 Network?        parNet2    = null;
 
 if (RunParallelPool)
 {
     parNet2 = BuildNet(seed: 67);
-    Console.WriteLine($"\n  [Parallel — {ParallelThreads} threads, ThreadPool-based]");
+    Console.WriteLine($"\n  [Parallel – {ParallelThreads} threads, ThreadPool-based]");
     Array.Copy(originalSamples, trainSet.Samples, originalSamples.Length);
     parResult2 = new Trainer(
         new DataParallelStrategy(loss, sgd, ParallelThreads, useThreadPool: true), trainCfg)

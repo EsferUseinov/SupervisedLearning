@@ -1,6 +1,5 @@
 namespace SupervisedLearning.Training.Strategies;
 
-using System.Collections.Concurrent;
 using System.Threading;
 using SupervisedLearning.Core;
 using SupervisedLearning.Core.Interfaces;
@@ -22,9 +21,12 @@ public class DataParallelStrategy : ITrainingStrategy
     private Action[]? _threadWork;
     private Barrier? _startBarrier;
     private Barrier? _endBarrier;
+    private int _nextChunk;
+    private CountdownEvent? _poolCountdown;
 
     private const int ParallelReduceThreshold = 10_000;
     private const int GrainFactor = 4;
+    private const int CacheLineDoubles = 8;
 
     private int ChunkCount => _useThreadPool ? _threadCount * GrainFactor : _threadCount;
 
@@ -45,7 +47,7 @@ public class DataParallelStrategy : ITrainingStrategy
 
         _networkClones = new Network[_threadCount];
         _accumulated = new GradientPacket[layerCount];
-        _threadLosses = new double[_threadCount];
+        _threadLosses = new double[_threadCount * CacheLineDoubles];
         _chunks = new ArraySegment<DataSample>[ChunkCount];
 
         for (int t = 0; t < _threadCount; t++)
@@ -56,11 +58,9 @@ public class DataParallelStrategy : ITrainingStrategy
 
         if (_useThreadPool)
         {
-            ThreadPool.GetMinThreads(out int _, out int minIo);
             ThreadPool.GetMaxThreads(out int _, out int maxIo);
-            ThreadPool.SetMinThreads(1, minIo);
             ThreadPool.SetMaxThreads(_threadCount, maxIo);
-            ThreadPool.SetMinThreads(_threadCount, minIo);
+            _poolCountdown = new CountdownEvent(_threadCount);
         }
         else
         {
@@ -83,8 +83,14 @@ public class DataParallelStrategy : ITrainingStrategy
                 while (true)
                 {
                     _startBarrier!.SignalAndWait();
-                    _threadWork![idx]();
-                    _endBarrier!.SignalAndWait();
+                    try
+                    {
+                        _threadWork![idx]();
+                    }
+                    finally
+                    {
+                        _endBarrier!.SignalAndWait();
+                    }
                 }
             }) { IsBackground = true };
             _persistentThreads[t].Start();
@@ -127,7 +133,7 @@ public class DataParallelStrategy : ITrainingStrategy
         ReduceAndUpdate(network, workerCount, layerCount, batch.Length, learningRate);
 
         double totalLoss = 0.0;
-        for (int t = 0; t < workerCount; t++) totalLoss += _threadLosses![t];
+        for (int t = 0; t < workerCount; t++) totalLoss += _threadLosses![t * CacheLineDoubles];
 
         return totalLoss / batch.Length;
     }
@@ -163,17 +169,17 @@ public class DataParallelStrategy : ITrainingStrategy
 
     private void SyncWeightsWithThreadPool(Network network)
     {
-        using var done = new CountdownEvent(_threadCount);
+        _poolCountdown!.Reset(_threadCount);
         for (int t = 0; t < _threadCount; t++)
         {
             int idx = t;
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 SyncWeights(network, _networkClones![idx]);
-                done.Signal();
+                _poolCountdown!.Signal();
             });
         }
-        done.Wait();
+        _poolCountdown!.Wait();
     }
 
     private void RunWithThreads(
@@ -198,9 +204,8 @@ public class DataParallelStrategy : ITrainingStrategy
         double[] threadLosses,
         int actualChunks)
     {
-        using var countdown = new CountdownEvent(_threadCount);
-        var chunkQueue = new ConcurrentQueue<int>();
-        for (int i = 0; i < actualChunks; i++) chunkQueue.Enqueue(i);
+        _poolCountdown!.Reset(_threadCount);
+        _nextChunk = 0;
 
         for (int w = 0; w < _threadCount; w++)
         {
@@ -214,8 +219,11 @@ public class DataParallelStrategy : ITrainingStrategy
                 for (int l = 0; l < layerCount; l++)
                     clone.Layers[l].GetGradients().Reset();
 
-                while (chunkQueue.TryDequeue(out int chunkIdx))
+                while (true)
                 {
+                    int chunkIdx = Interlocked.Increment(ref _nextChunk) - 1;
+                    if (chunkIdx >= actualChunks) break;
+
                     foreach (var sample in chunks[chunkIdx])
                     {
                         double[] predicted = clone.Forward(sample.Input);
@@ -224,12 +232,12 @@ public class DataParallelStrategy : ITrainingStrategy
                     }
                 }
 
-                threadLosses[workerIdx] = totalLoss;
-                countdown.Signal();
+                threadLosses[workerIdx * CacheLineDoubles] = totalLoss;
+                _poolCountdown!.Signal();
             });
         }
 
-        countdown.Wait();
+        _poolCountdown!.Wait();
     }
 
     private void ReduceAndUpdate(Network network, int actualThreads, int layerCount, int batchSize, double learningRate)
@@ -243,7 +251,8 @@ public class DataParallelStrategy : ITrainingStrategy
 
             if (wCount >= ParallelReduceThreshold)
             {
-                int rangeSize = (wCount + _threadCount - 1) / _threadCount;
+                int rawRange = (wCount + _threadCount - 1) / _threadCount;
+                int rangeSize = (rawRange + CacheLineDoubles - 1) / CacheLineDoubles * CacheLineDoubles;
 
                 if (_useThreadPool)
                     ReduceWeightsWithThreadPool(acc, actualThreads, l, wCount, rangeSize, invBatch);
@@ -301,12 +310,12 @@ public class DataParallelStrategy : ITrainingStrategy
         GradientPacket acc, int actualThreads, int layerIdx,
         int wCount, int rangeSize, double invBatch)
     {
-        using var done = new CountdownEvent(_threadCount);
+        _poolCountdown!.Reset(_threadCount);
 
         for (int r = 0; r < _threadCount; r++)
         {
             int rf = r * rangeSize;
-            if (rf >= wCount) { done.Signal(); continue; }
+            if (rf >= wCount) { _poolCountdown!.Signal(); continue; }
             int rt = Math.Min(rf + rangeSize, wCount);
 
             ThreadPool.QueueUserWorkItem(_ =>
@@ -315,11 +324,11 @@ public class DataParallelStrategy : ITrainingStrategy
                 for (int ti = 0; ti < actualThreads; ti++)
                     acc.AccumulateRange(_networkClones![ti].Layers[layerIdx].GetGradients(), rf, rt);
                 acc.ScaleRange(invBatch, rf, rt);
-                done.Signal();
+                _poolCountdown!.Signal();
             });
         }
 
-        done.Wait();
+        _poolCountdown!.Wait();
     }
 
     private void ProcessChunk(
@@ -341,6 +350,6 @@ public class DataParallelStrategy : ITrainingStrategy
             networkClone.Backward(_lossFunction.Gradient(predicted, sample.Label));
         }
 
-        threadLosses[threadIdx] = totalLoss;
+        threadLosses[threadIdx * CacheLineDoubles] = totalLoss;
     }
 }
